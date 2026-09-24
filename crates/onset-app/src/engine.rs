@@ -317,11 +317,20 @@ mod tests {
         assert_eq!(track_label("  ", "HORN"), "HORN");
     }
 
+    /// The private fixtures, when present together with the audio file of the demo track.
     fn fixtures() -> Option<PathBuf> {
         let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/private");
-        (root.join("master.db").exists()
-            && std::path::Path::new(r"C:\Users\Reima\Music\DJ\Adam Port - Move.flac").exists())
-        .then_some(root)
+        if !root.join("master.db").exists() {
+            return None;
+        }
+        let paths = RekordboxPaths::from_app_dir(&root).ok()?;
+        let cache = tempfile::tempdir().ok()?;
+        let library = Library::open(&paths, cache.path()).ok()?;
+        let meta = library.find_by_title_artist("Move", "")?;
+        meta.file_path
+            .as_ref()
+            .is_some_and(|p| p.exists())
+            .then_some(root)
     }
 
     #[test]

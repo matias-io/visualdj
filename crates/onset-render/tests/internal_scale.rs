@@ -74,3 +74,41 @@ fn scale_is_clamped_and_one_means_no_offscreen_pass() {
     );
     assert_eq!(r.internal_size(), (16, 16));
 }
+
+#[test]
+fn resize_rebuilds_the_offscreen_target_and_keeps_overlays_at_full_size() {
+    let (mut h, mut r) = setup((64, 64), SPLIT);
+    r.set_internal_scale(&h.gpu, 0.5);
+    let _ = frame(&h, &mut r);
+
+    h.resize((96, 48));
+    r.resize(&h.gpu, (96, 48));
+    assert_eq!(r.internal_size(), (48, 24));
+    r.set_show_hud(true);
+    let px = frame(&h, &mut r);
+    assert_eq!(px.len(), 96 * 48 * 4, "output follows the new size");
+    let at = |x: usize, y: usize| &px[(y * 96 + x) * 4..(y * 96 + x) * 4 + 4];
+    assert_eq!(
+        &at(4, 40)[..3],
+        &[255, 0, 0],
+        "left half still red after resize"
+    );
+    assert_eq!(
+        &at(92, 40)[..3],
+        &[0, 255, 0],
+        "right half still green after resize"
+    );
+}
+
+#[test]
+fn a_renderer_without_scenes_clears_to_black() {
+    let h = Headless::new((16, 16), true).expect("adapter");
+    let mut r = Renderer::new(&h.gpu, (16, 16), h.format);
+    r.set_show_card(false);
+    let px = frame(&h, &mut r);
+    assert!(
+        px.as_chunks::<4>().0.iter().all(|p| *p == [0, 0, 0, 255]),
+        "{:?}",
+        &px[..8]
+    );
+}

@@ -32,7 +32,11 @@ impl FrameBindings {
                     ty: wgpu::BindingType::Buffer {
                         ty: wgpu::BufferBindingType::Uniform,
                         has_dynamic_offset: false,
-                        min_binding_size: None,
+                        // A shader whose `Frame` is bigger than this fails at pipeline
+                        // creation, inside our error scope, instead of at draw time.
+                        min_binding_size: std::num::NonZeroU64::new(
+                            std::mem::size_of::<FrameUniforms>() as u64,
+                        ),
                     },
                     count: None,
                 }],

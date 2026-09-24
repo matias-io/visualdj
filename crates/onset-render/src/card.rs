@@ -31,6 +31,63 @@ struct Slot {
     art_ready: bool,
 }
 
+/// The crossfade between the previous and the current card. A change that lands while a
+/// fade is still running continues from the opacities on screen, so nothing flashes when
+/// the master bounces between decks during a blend.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct FadeState {
+    changed_at: Option<f32>,
+    /// Opacity the new card starts from (0, or the old card's opacity on a swap back).
+    new_from: f32,
+    /// Opacity the old card starts from.
+    old_from: f32,
+}
+
+impl Default for FadeState {
+    fn default() -> Self {
+        Self {
+            changed_at: None,
+            new_from: 1.0,
+            old_from: 0.0,
+        }
+    }
+}
+
+impl FadeState {
+    fn progress(&self, now: f32) -> f32 {
+        self.changed_at
+            .map_or(1.0, |start| smoothstep((now - start) / FADE_S))
+    }
+
+    /// (new card opacity, old card opacity) at `now`.
+    pub fn alphas(&self, now: f32) -> (f32, f32) {
+        let s = self.progress(now);
+        (
+            self.new_from + (1.0 - self.new_from) * s,
+            self.old_from * (1.0 - s),
+        )
+    }
+
+    /// True once the old card is gone and the new one is fully visible.
+    pub fn settled(&self, now: f32) -> bool {
+        self.progress(now) >= 1.0
+    }
+
+    /// Starts a new fade at `now`. `swap_back` means the incoming card is the one that was
+    /// fading out, so it resumes from its current opacity instead of from zero.
+    pub fn change(&mut self, now: f32, swap_back: bool) {
+        let (new_alpha, old_alpha) = self.alphas(now);
+        self.changed_at = Some(now);
+        if swap_back {
+            self.new_from = old_alpha;
+            self.old_from = new_alpha;
+        } else {
+            self.new_from = 0.0;
+            self.old_from = new_alpha;
+        }
+    }
+}
+
 /// Per-frame inputs to [`Card::draw`].
 #[derive(Debug, Clone, Copy)]
 pub struct CardFrame<'a> {
@@ -49,8 +106,7 @@ pub struct Card {
     scrim: QuadTexture,
     current: Option<Slot>,
     previous: Option<Slot>,
-    /// When the last change started, in the renderer's seconds.
-    fade_start: Option<f32>,
+    fade: FadeState,
 }
 
 fn smoothstep(t: f32) -> f32 {
@@ -91,14 +147,13 @@ impl Card {
             scrim,
             current: None,
             previous: None,
-            fade_start: None,
+            fade: FadeState::default(),
         }
     }
 
     /// Progress of the current crossfade, 0 at the change and 1 once settled.
     pub fn fade(&self, time_s: f32) -> f32 {
-        self.fade_start
-            .map_or(1.0, |start| smoothstep((time_s - start) / FADE_S))
+        self.fade.progress(time_s)
     }
 
     /// True while a card is on screen or fading out.
@@ -109,19 +164,27 @@ impl Card {
     /// Follows the master track: a new id starts a crossfade and an artwork decode.
     pub fn update(&mut self, gpu: &Gpu, track: Option<&TrackMeta>, time_s: f32) {
         let current_id = self.current.as_ref().map(|s| s.meta.id);
-        if track.map(|t| t.id) != current_id {
-            self.previous = self.current.take();
-            self.fade_start = Some(time_s);
-            if let Some(meta) = track {
-                let art = self.quads.upload(gpu, &placeholder());
-                if let Some(path) = &meta.artwork_path {
-                    self.loader.request(path.clone());
+        let wanted_id = track.map(|t| t.id);
+        if wanted_id != current_id {
+            let swap_back =
+                wanted_id.is_some() && self.previous.as_ref().map(|s| s.meta.id) == wanted_id;
+            self.fade.change(time_s, swap_back);
+            if swap_back {
+                // The track that was fading out is back: keep its artwork, just swap roles.
+                std::mem::swap(&mut self.current, &mut self.previous);
+            } else {
+                self.previous = self.current.take();
+                if let Some(meta) = track {
+                    let art = self.quads.upload(gpu, &placeholder());
+                    if let Some(path) = &meta.artwork_path {
+                        self.loader.request(path.clone());
+                    }
+                    self.current = Some(Slot {
+                        meta: meta.clone(),
+                        art,
+                        art_ready: false,
+                    });
                 }
-                self.current = Some(Slot {
-                    meta: meta.clone(),
-                    art,
-                    art_ready: false,
-                });
             }
         }
 
@@ -135,11 +198,8 @@ impl Card {
             }
         }
 
-        if self.fade(time_s) >= 1.0 {
+        if self.fade.settled(time_s) {
             self.previous = None;
-            if self.current.is_none() {
-                self.fade_start = None;
-            }
         }
     }
 
@@ -161,10 +221,14 @@ impl Card {
             live_bpm,
             time_s,
         } = frame;
-        let t = self.fade(time_s);
-        let alpha_new = if self.current.is_some() { t } else { 0.0 };
+        let (fade_new, fade_old) = self.fade.alphas(time_s);
+        let alpha_new = if self.current.is_some() {
+            fade_new
+        } else {
+            0.0
+        };
         let alpha_old = if self.previous.is_some() {
-            1.0 - t
+            fade_old
         } else {
             0.0
         };
@@ -309,5 +373,69 @@ mod tests {
         assert!((smoothstep(2.0) - 1.0).abs() < f32::EPSILON);
         assert!(smoothstep(0.25) < smoothstep(0.5));
         assert!((smoothstep(0.5) - 0.5).abs() < 1e-6);
+    }
+}
+
+#[cfg(test)]
+mod fade_tests {
+    use super::*;
+
+    fn max_step(samples: &[(f32, f32)]) -> f32 {
+        samples
+            .windows(2)
+            .map(|w| ((w[1].0 - w[0].0).abs()).max((w[1].1 - w[0].1).abs()))
+            .fold(0.0, f32::max)
+    }
+
+    #[test]
+    fn a_quick_second_change_starts_from_the_current_opacities() {
+        let mut f = FadeState::default();
+        f.change(0.0, false);
+        let before = f.alphas(0.3);
+        f.change(0.3, false);
+        let after = f.alphas(0.3);
+        assert!((after.0).abs() < 1e-6, "new card starts invisible");
+        assert!(
+            (after.1 - before.0).abs() < 1e-6,
+            "old card continues from where the previous new card was: {before:?} -> {after:?}"
+        );
+    }
+
+    #[test]
+    fn switching_back_keeps_both_cards_continuous() {
+        // Track A has been on screen long enough to be settled when the bounce starts.
+        let mut f = FadeState::default();
+        f.change(0.0, false);
+        // Samples are (opacity of A, opacity of B), whichever role each holds.
+        let mut samples = Vec::new();
+        let mut a_is_new = true;
+        let mut t = 1.5f32;
+        while t < 4.5 {
+            if (t - 1.8).abs() < 1e-6 {
+                f.change(t, false); // B comes in
+                a_is_new = false;
+            }
+            if (t - 2.1).abs() < 1e-6 {
+                f.change(t, true); // A comes back: roles swap, nothing jumps
+                a_is_new = true;
+            }
+            let (new, old) = f.alphas(t);
+            samples.push(if a_is_new { (new, old) } else { (old, new) });
+            t = ((t + 0.1) * 10.0).round() / 10.0;
+        }
+        assert!(max_step(&samples) < 0.2, "opacity jumped: {samples:?}");
+        let last = samples.last().unwrap();
+        assert!(
+            (last.0 - 1.0).abs() < 1e-3 && last.1.abs() < 1e-3,
+            "settles: {last:?}"
+        );
+    }
+
+    #[test]
+    fn settled_state_is_fully_visible() {
+        let mut f = FadeState::default();
+        f.change(1.0, false);
+        assert_eq!(f.alphas(1.0 + FADE_S + 0.1), (1.0, 0.0));
+        assert!(f.settled(1.0 + FADE_S + 0.1));
     }
 }

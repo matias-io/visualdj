@@ -36,6 +36,10 @@ pub struct Config {
     pub sim_track: Option<String>,
     /// Substring of the loopback endpoint name; default output device when `None`.
     pub audio_device: Option<String>,
+    /// Set when the file on disk failed to parse: saving would destroy the user's edits,
+    /// so it is refused until they fix the file.
+    #[serde(skip)]
+    pub read_only: bool,
 }
 
 impl Default for Config {
@@ -45,10 +49,11 @@ impl Default for Config {
             present_mode: PresentModeChoice::Fifo,
             internal_scale: 1.0,
             scene: "ring".to_string(),
-            show_hud: true,
+            show_hud: false,
             show_card: true,
             sim_track: None,
             audio_device: None,
+            read_only: false,
         }
     }
 }
@@ -70,8 +75,14 @@ impl Config {
     pub fn load_from(path: &Path) -> Self {
         match std::fs::read_to_string(path) {
             Ok(text) => toml::from_str(&text).unwrap_or_else(|e| {
-                tracing::warn!(path = %path.display(), "config unreadable, using defaults: {e}");
-                Self::default()
+                tracing::warn!(
+                    path = %path.display(),
+                    "config unreadable, using defaults and not saving over it: {e}"
+                );
+                Self {
+                    read_only: true,
+                    ..Self::default()
+                }
             }),
             Err(_) => Self::default(),
         }
@@ -81,11 +92,20 @@ impl Config {
         self.save_to(&Self::path())
     }
 
+    /// Writes to a temporary file beside `path` and renames it into place, so a crash
+    /// mid-write cannot leave a half-written config.
     pub fn save_to(&self, path: &Path) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            !self.read_only,
+            "not saving: {} failed to parse at startup; fix or delete it first",
+            path.display()
+        );
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir)?;
         }
-        std::fs::write(path, toml::to_string_pretty(self)?)?;
+        let tmp = path.with_extension("toml.tmp");
+        std::fs::write(&tmp, toml::to_string_pretty(self)?)?;
+        std::fs::rename(&tmp, path)?;
         Ok(())
     }
 }
@@ -102,7 +122,11 @@ mod tests {
         assert_eq!(cfg.output_monitor, MonitorChoice::Primary);
         assert_eq!(cfg.present_mode, PresentModeChoice::Fifo);
         assert!((cfg.internal_scale - 1.0).abs() < f32::EPSILON);
-        assert!(cfg.show_hud && cfg.show_card);
+        assert!(
+            !cfg.show_hud,
+            "telemetry stays off the projector by default"
+        );
+        assert!(cfg.show_card);
     }
 
     #[test]
@@ -118,6 +142,7 @@ mod tests {
             show_card: true,
             sim_track: Some("Move".into()),
             audio_device: Some("NVIDIA".into()),
+            read_only: false,
         };
         cfg.save_to(&path).unwrap();
         assert_eq!(Config::load_from(&path), cfg);
@@ -128,7 +153,15 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config.toml");
         std::fs::write(&path, "this is = not [ toml").unwrap();
-        assert_eq!(Config::load_from(&path), Config::default());
+        let cfg = Config::load_from(&path);
+        assert!(cfg.read_only);
+        assert_eq!(
+            Config {
+                read_only: false,
+                ..cfg
+            },
+            Config::default()
+        );
     }
 
     #[test]
@@ -139,5 +172,39 @@ mod tests {
         })
         .unwrap();
         assert!(s.contains("DISPLAY2"), "{s}");
+    }
+}
+
+#[cfg(test)]
+mod safety_tests {
+    use super::*;
+
+    #[test]
+    fn a_config_that_failed_to_parse_is_never_overwritten() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "scene = 'ring'\nthis is = not [ toml").unwrap();
+        let cfg = Config::load_from(&path);
+        assert!(cfg.read_only, "a corrupt file marks the config read-only");
+        assert!(cfg.save_to(&path).is_err(), "saving must refuse");
+        assert!(
+            std::fs::read_to_string(&path)
+                .unwrap()
+                .contains("not [ toml"),
+            "the user's file is untouched"
+        );
+    }
+
+    #[test]
+    fn save_leaves_no_temporary_file_behind() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        Config::default().save_to(&path).unwrap();
+        let names: Vec<String> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(names, vec!["config.toml".to_string()]);
     }
 }

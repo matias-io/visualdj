@@ -84,10 +84,7 @@ fn main() -> anyhow::Result<()> {
         println!("{}", Config::path().display());
         return Ok(());
     }
-    let mut config = Config::load();
-    if let Some(scene) = &cli.scene {
-        config.scene.clone_from(scene);
-    }
+    let config = Config::load();
 
     let sim_track = cli.sim.clone().or_else(|| config.sim_track.clone());
     let engine = match Engine::start(EngineConfig {
@@ -112,6 +109,7 @@ fn main() -> anyhow::Result<()> {
     let opts = AppOptions {
         config,
         monitor: cli.monitor.as_deref().map(parse_monitor),
+        scene: cli.scene.clone(),
         exit_after: cli.exit_after.or(cli.bench).map(Duration::from_secs_f64),
         bench: cli.bench.is_some(),
         settings_open: cli.settings,

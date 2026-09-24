@@ -74,6 +74,14 @@ impl Gpu {
             ..Default::default()
         }))
         .context("device creation failed")?;
+        // wgpu's default handler panics on the first uncaptured error; at a gig a logged
+        // error and a frame that keeps rendering is the only acceptable behaviour.
+        device.on_uncaptured_error(std::sync::Arc::new(|e: wgpu::Error| {
+            tracing::error!("wgpu: {e}");
+        }));
+        device.set_device_lost_callback(|reason, message| {
+            tracing::error!(?reason, "GPU device lost: {message}");
+        });
         tracing::info!(
             adapter = %info.name,
             backend = ?info.backend,

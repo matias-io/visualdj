@@ -43,6 +43,9 @@ pub struct Renderer {
     internal_scale: f32,
     blit: QuadPipeline,
     offscreen: Option<QuadTexture>,
+    /// Output nothing but black: the DJ's panic button and the end-of-set fade target.
+    blackout: bool,
+    last_frame: Option<Instant>,
 }
 
 impl Renderer {
@@ -64,7 +67,17 @@ impl Renderer {
             internal_scale: 1.0,
             blit: QuadPipeline::new(gpu, format),
             offscreen: None,
+            blackout: false,
+            last_frame: None,
         }
+    }
+
+    pub fn set_blackout(&mut self, on: bool) {
+        self.blackout = on;
+    }
+
+    pub fn blackout(&self) -> bool {
+        self.blackout
     }
 
     /// Fraction of the output resolution scenes render at, clamped to
@@ -125,6 +138,11 @@ impl Renderer {
 
     pub fn last_error(&self) -> Option<&str> {
         self.last_error.as_deref()
+    }
+
+    /// Shows a message in the HUD until the next successful reload clears it.
+    pub fn set_last_error(&mut self, message: String) {
+        self.last_error = Some(message);
     }
 
     /// Recompiles a fullscreen scene from new WGSL. On failure the old pipeline stays in use
@@ -245,7 +263,19 @@ impl Renderer {
         time_s: f32,
     ) -> FrameStats {
         let started = Instant::now();
-        self.hud.record(time_s, self.last_cpu_ms);
+        let interval_ms = self
+            .last_frame
+            .map(|t| started.duration_since(t).as_secs_f32() * 1000.0);
+        self.last_frame = Some(started);
+        self.hud.record(interval_ms, self.last_cpu_ms);
+        if self.blackout || self.scenes.is_empty() {
+            clear_to_black(encoder, target);
+        }
+        if self.blackout {
+            let cpu_ms = started.elapsed().as_secs_f32() * 1000.0;
+            self.last_cpu_ms = cpu_ms;
+            return FrameStats { cpu_ms };
+        }
         let internal = self.internal_size();
         self.bindings
             .write(gpu, &FrameUniforms::from_state(ms, internal, time_s));
@@ -330,4 +360,20 @@ impl Renderer {
         self.last_cpu_ms = cpu_ms;
         FrameStats { cpu_ms }
     }
+}
+
+fn clear_to_black(encoder: &mut wgpu::CommandEncoder, target: &wgpu::TextureView) {
+    encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+        label: Some("clear"),
+        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+            view: target,
+            depth_slice: None,
+            resolve_target: None,
+            ops: wgpu::Operations {
+                load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                store: wgpu::StoreOp::Store,
+            },
+        })],
+        ..Default::default()
+    });
 }

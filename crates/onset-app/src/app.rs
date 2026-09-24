@@ -29,6 +29,8 @@ pub struct AppOptions {
     pub config: Config,
     /// Command-line override of the configured monitor.
     pub monitor: Option<MonitorChoice>,
+    /// Command-line override of the starting scene; not written to the config.
+    pub scene: Option<String>,
     /// Close automatically after this long (for unattended checks).
     pub exit_after: Option<Duration>,
     /// Present without `VSync` and print frame statistics on exit.
@@ -89,13 +91,12 @@ fn monitor_infos(event_loop: &ActiveEventLoop) -> (Vec<MonitorHandle>, Vec<Monit
 /// broken file cannot take the whole output down.
 fn load_scenes(gpu: &Gpu, format: wgpu::TextureFormat, renderer: &mut Renderer) {
     let dir = shader_dir();
-    match builtin_scenes(gpu, format, &renderer.bindings().layout, &dir) {
-        Ok(scenes) => {
-            for scene in scenes {
-                renderer.add_scene(scene);
-            }
-        }
-        Err(e) => tracing::error!("{e}"),
+    let loaded = builtin_scenes(gpu, format, &renderer.bindings().layout, &dir);
+    for scene in loaded.scenes {
+        renderer.add_scene(scene);
+    }
+    if let Some(e) = loaded.errors.first() {
+        renderer.set_last_error(e.to_string());
     }
     tracing::info!(scenes = ?renderer.scene_names(), dir = %dir.display(), "scenes loaded");
 }
@@ -152,6 +153,21 @@ fn save_frame(s: &Surface, texture: &wgpu::Texture, path: &std::path::Path) {
     match img.save(path) {
         Ok(()) => tracing::info!(path = %path.display(), "screenshot saved"),
         Err(e) => tracing::warn!("screenshot not saved: {e}"),
+    }
+}
+
+/// Borderless fullscreen on `monitor` (always on top, so nothing covers the projector), or
+/// a plain 1280x720 window when the output is not going to a dedicated display.
+fn window_attributes(fullscreen: bool, monitor: Option<&MonitorHandle>) -> WindowAttributes {
+    let attrs = WindowAttributes::default()
+        .with_title("Onset")
+        .with_decorations(false);
+    if fullscreen {
+        attrs
+            .with_fullscreen(Some(Fullscreen::Borderless(monitor.cloned())))
+            .with_window_level(WindowLevel::AlwaysOnTop)
+    } else {
+        attrs.with_inner_size(PhysicalSize::new(1280u32, 720u32))
     }
 }
 
@@ -229,7 +245,13 @@ impl OnsetApp {
             .unwrap_or_else(|| self.opts.config.output_monitor.clone());
         let (index, fell_back) = choose(&infos, &choice);
         if fell_back {
-            tracing::warn!(?choice, "requested monitor not found, using the primary");
+            // Without the projector, a fullscreen always-on-top window would cover rekordbox
+            // on the laptop screen; open a plain window instead and let F go fullscreen.
+            tracing::warn!(
+                ?choice,
+                "requested monitor not found, opening a window on the primary"
+            );
+            self.fullscreen = false;
         }
         let monitor = handles.get(index).cloned();
         if let Some(info) = infos.get(index) {
@@ -242,18 +264,9 @@ impl OnsetApp {
             );
         }
 
-        let mut attrs = WindowAttributes::default()
-            .with_title("Onset")
-            .with_decorations(false);
-        attrs = if self.fullscreen {
-            // The projector output must not be covered by stray windows.
-            attrs
-                .with_fullscreen(Some(Fullscreen::Borderless(monitor.clone())))
-                .with_window_level(WindowLevel::AlwaysOnTop)
-        } else {
-            attrs.with_inner_size(PhysicalSize::new(1280u32, 720u32))
-        };
-        let window = Arc::new(event_loop.create_window(attrs)?);
+        let window = Arc::new(
+            event_loop.create_window(window_attributes(self.fullscreen, monitor.as_ref()))?,
+        );
         window.set_cursor_visible(false);
 
         let instance = Gpu::new_instance();
@@ -299,8 +312,13 @@ impl OnsetApp {
         renderer.set_show_hud(self.opts.config.show_hud);
         renderer.set_internal_scale(&gpu, self.opts.config.internal_scale);
         load_scenes(&gpu, format, &mut renderer);
-        if !renderer.set_scene(&self.opts.config.scene) {
-            tracing::info!(requested = %self.opts.config.scene, "scene not found, using the first");
+        let wanted = self
+            .opts
+            .scene
+            .clone()
+            .unwrap_or_else(|| self.opts.config.scene.clone());
+        if !renderer.set_scene(&wanted) {
+            tracing::info!(requested = %wanted, "scene not found, using the first");
         }
 
         let watcher = match ShaderWatcher::new(&shader_dir()) {
@@ -518,8 +536,21 @@ impl OnsetApp {
 
     fn on_key(&mut self, event_loop: &ActiveEventLoop, key: KeyCode) {
         match key {
-            KeyCode::Escape => event_loop.exit(),
+            KeyCode::Escape => {
+                // With the panel open, Esc closes it; a second Esc quits.
+                match self.surface.as_mut() {
+                    Some(s) if s.overlay.is_open() => s.overlay.set_open(&s.window, false),
+                    _ => event_loop.exit(),
+                }
+            }
             KeyCode::KeyF => self.toggle_fullscreen(),
+            KeyCode::KeyB => {
+                if let Some(s) = self.surface.as_mut() {
+                    let on = !s.renderer.blackout();
+                    s.renderer.set_blackout(on);
+                    tracing::info!(blackout = on, "toggle");
+                }
+            }
             KeyCode::KeyH => {
                 self.opts.config.show_hud = !self.opts.config.show_hud;
                 if let Some(s) = self.surface.as_mut() {

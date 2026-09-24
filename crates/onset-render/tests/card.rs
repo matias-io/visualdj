@@ -168,3 +168,26 @@ fn hud_draws_when_enabled() {
         "HUD text must be drawn"
     );
 }
+
+#[test]
+fn blackout_hides_scene_and_overlays() {
+    let (h, mut r) = setup((320, 180));
+    let ms = MusicState {
+        track: Some(move_track()),
+        ..MusicState::default()
+    };
+    let _ = frame(&h, &mut r, &ms, 0.0);
+    r.set_show_hud(true);
+    r.set_blackout(true);
+    let dark = frame(&h, &mut r, &ms, 5.0);
+    assert!(
+        dark.chunks(4).all(|p| p == [0, 0, 0, 255]),
+        "blackout must be pure black"
+    );
+    r.set_blackout(false);
+    let back = frame(&h, &mut r, &ms, 6.0);
+    assert!(
+        back.chunks(4).any(|p| p[2] > 40),
+        "scene returns after blackout"
+    );
+}

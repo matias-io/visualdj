@@ -77,8 +77,9 @@ fn playing_state(beat_phase: f32) -> MusicState {
 fn every_builtin_scene_loads() {
     let h = Headless::new(SIZE, true).expect("adapter");
     let b = FrameBindings::new(&h.gpu);
-    let scenes =
-        builtin_scenes(&h.gpu, h.format, &b.layout, &shader_dir()).expect("all shaders compile");
+    let loaded = builtin_scenes(&h.gpu, h.format, &b.layout, &shader_dir());
+    assert!(loaded.errors.is_empty(), "{:?}", loaded.errors);
+    let scenes = loaded.scenes;
     let names: Vec<&str> = scenes.iter().map(|s| s.name()).collect();
     assert_eq!(names, BUILTIN_SCENE_NAMES);
     assert!(names.len() >= 4, "{names:?}");
@@ -88,7 +89,7 @@ fn every_builtin_scene_loads() {
 fn scenes_react_to_the_beat() {
     let h = Headless::new(SIZE, true).expect("adapter");
     let b = FrameBindings::new(&h.gpu);
-    let mut scenes = builtin_scenes(&h.gpu, h.format, &b.layout, &shader_dir()).unwrap();
+    let mut scenes = builtin_scenes(&h.gpu, h.format, &b.layout, &shader_dir()).scenes;
     for scene in &mut scenes {
         let a = render(&h, scene.as_mut(), &b, &playing_state(0.05));
         let c = render(&h, scene.as_mut(), &b, &playing_state(0.9));
@@ -105,7 +106,7 @@ fn scenes_react_to_the_beat() {
 fn scenes_render_idle_state() {
     let h = Headless::new(SIZE, true).expect("adapter");
     let b = FrameBindings::new(&h.gpu);
-    let mut scenes = builtin_scenes(&h.gpu, h.format, &b.layout, &shader_dir()).unwrap();
+    let mut scenes = builtin_scenes(&h.gpu, h.format, &b.layout, &shader_dir()).scenes;
     for scene in &mut scenes {
         let px = render(&h, scene.as_mut(), &b, &MusicState::default());
         assert!(
@@ -125,4 +126,67 @@ fn scenes_render_idle_state() {
             scene.name()
         );
     }
+}
+
+fn copy_shaders_to(dir: &std::path::Path) {
+    for entry in std::fs::read_dir(shader_dir()).unwrap().flatten() {
+        std::fs::copy(entry.path(), dir.join(entry.file_name())).unwrap();
+    }
+}
+
+#[test]
+fn broken_builtin_shader_is_replaced_by_the_embedded_copy_and_reported() {
+    let h = Headless::new(SIZE, true).expect("adapter");
+    let b = FrameBindings::new(&h.gpu);
+    let dir = tempfile::tempdir().unwrap();
+    copy_shaders_to(dir.path());
+    std::fs::write(dir.path().join("ring.wgsl"), "fn broken(").unwrap();
+
+    let loaded = builtin_scenes(&h.gpu, h.format, &b.layout, dir.path());
+    let names: Vec<&str> = loaded.scenes.iter().map(|s| s.name()).collect();
+    assert_eq!(names, BUILTIN_SCENE_NAMES, "every scene is still available");
+    assert_eq!(loaded.errors.len(), 1);
+    assert_eq!(loaded.errors[0].name, "ring");
+}
+
+#[test]
+fn missing_shader_files_fall_back_to_embedded_sources() {
+    let h = Headless::new(SIZE, true).expect("adapter");
+    let b = FrameBindings::new(&h.gpu);
+    let dir = tempfile::tempdir().unwrap();
+    let loaded = builtin_scenes(&h.gpu, h.format, &b.layout, dir.path());
+    assert_eq!(loaded.scenes.len(), BUILTIN_SCENE_NAMES.len());
+    assert!(
+        loaded.errors.is_empty(),
+        "a missing file is not a shader error"
+    );
+}
+
+fn distinct_colours(px: &[u8]) -> usize {
+    let mut set = std::collections::HashSet::new();
+    for p in px.as_chunks::<4>().0 {
+        set.insert([p[0] >> 2, p[1] >> 2, p[2] >> 2]);
+    }
+    set.len()
+}
+
+#[test]
+fn warp_keeps_its_detail_after_hours_of_runtime() {
+    let h = Headless::new(SIZE, true).expect("adapter");
+    let b = FrameBindings::new(&h.gpu);
+    let mut scenes = builtin_scenes(&h.gpu, h.format, &b.layout, &shader_dir()).scenes;
+    let warp = scenes
+        .iter_mut()
+        .find(|s| s.name() == "warp")
+        .expect("warp scene");
+    let mut early = playing_state(0.3);
+    early.time_s = 10.0;
+    let mut late = playing_state(0.3);
+    late.time_s = 20_000.0;
+    let a = distinct_colours(&render(&h, warp.as_mut(), &b, &early));
+    let c = distinct_colours(&render(&h, warp.as_mut(), &b, &late));
+    assert!(
+        c as f64 > 0.6 * a as f64,
+        "warp collapsed from {a} to {c} distinct colours after 20000 s"
+    );
 }

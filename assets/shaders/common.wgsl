@@ -60,10 +60,16 @@ fn centred(uv: vec2<f32>) -> vec2<f32> {
     return vec2<f32>((uv.x - 0.5) * 2.0 * aspect, (0.5 - uv.y) * 2.0);
 }
 
+// Integer hash of the cell containing p. Integer maths keeps the noise stable however far
+// the coordinates drift over a long set; a fractional hash collapses to a few values once
+// f32 precision runs out (around 10^4).
 fn hash21(p: vec2<f32>) -> f32 {
-    var q = fract(p * vec2<f32>(123.34, 456.21));
-    q = q + dot(q, q + 45.32);
-    return fract(q.x * q.y);
+    let c = vec2<i32>(floor(p));
+    var n = bitcast<u32>(c.x) * 1597334677u ^ bitcast<u32>(c.y) * 3812015801u;
+    n = (n ^ (n >> 16u)) * 0x45d9f3bu;
+    n = (n ^ (n >> 16u)) * 0x45d9f3bu;
+    n = n ^ (n >> 16u);
+    return f32(n) / 4294967295.0;
 }
 
 fn noise2(p: vec2<f32>) -> f32 {
@@ -91,5 +97,5 @@ fn fbm(p_in: vec2<f32>) -> f32 {
 
 // Sharp-then-decaying pulse from a 0..1 phase: 1 at the beat, fading over the beat.
 fn beat_pulse(phase: f32, sharpness: f32) -> f32 {
-    return pow(1.0 - phase, sharpness);
+    return pow(clamp(1.0 - phase, 0.0, 1.0), sharpness);
 }

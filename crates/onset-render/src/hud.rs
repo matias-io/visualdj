@@ -24,7 +24,6 @@ pub struct HudInfo {
 
 pub struct Hud {
     frame_ms: VecDeque<f32>,
-    last_time: Option<f32>,
     cpu_ms: f32,
 }
 
@@ -58,23 +57,21 @@ impl Hud {
     pub fn new() -> Self {
         Self {
             frame_ms: VecDeque::with_capacity(WINDOW + 1),
-            last_time: None,
             cpu_ms: 0.0,
         }
     }
 
-    /// Records one frame: `time_s` is when it started, `cpu_ms` the previous frame's CPU cost.
-    pub fn record(&mut self, time_s: f32, cpu_ms: f32) {
-        if let Some(last) = self.last_time {
-            let dt = (time_s - last) * 1000.0;
-            if dt > 0.0 {
-                self.frame_ms.push_back(dt);
-                if self.frame_ms.len() > WINDOW {
-                    self.frame_ms.pop_front();
-                }
+    /// Records one frame: `interval_ms` since the previous frame (`None` for the first),
+    /// `cpu_ms` the previous frame's CPU cost.
+    pub fn record(&mut self, interval_ms: Option<f32>, cpu_ms: f32) {
+        if let Some(dt) = interval_ms
+            && dt > 0.0
+        {
+            self.frame_ms.push_back(dt);
+            if self.frame_ms.len() > WINDOW {
+                self.frame_ms.pop_front();
             }
         }
-        self.last_time = Some(time_s);
         self.cpu_ms = cpu_ms;
     }
 
@@ -172,11 +169,9 @@ mod tests {
     #[test]
     fn p99_tracks_the_slow_frames() {
         let mut hud = Hud::new();
-        let mut t = 0.0f32;
-        hud.record(t, 0.0);
+        hud.record(None, 0.0);
         for i in 0..200 {
-            t += if i % 50 == 25 { 0.040 } else { 0.008 };
-            hud.record(t, 1.0);
+            hud.record(Some(if i % 50 == 25 { 40.0 } else { 8.0 }), 1.0);
         }
         assert!(hud.p99_ms() > 30.0, "p99 {}", hud.p99_ms());
         assert!(hud.last_frame_ms() < 10.0);
@@ -185,8 +180,8 @@ mod tests {
     #[test]
     fn window_is_bounded() {
         let mut hud = Hud::new();
-        for i in 0..500 {
-            hud.record(i as f32 * 0.016, 0.5);
+        for _ in 0..500 {
+            hud.record(Some(16.0), 0.5);
         }
         assert_eq!(hud.frame_ms.len(), WINDOW);
     }

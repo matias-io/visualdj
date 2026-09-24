@@ -2577,6 +2577,7 @@ dependencies = [
  "notify",
  "onset-core",
  "pollster",
+ "tempfile",
  "thiserror 2.0.21",
  "tracing",
  "wgpu",

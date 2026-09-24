@@ -28,11 +28,13 @@ What works, verified against a real rekordbox 7.2.18 library on an RTX 3050 Ti l
   that turns all of that into an intensity envelope with anticipation.
 - Plays a track through a built-in simulator with an exact playhead, and captures the live
   mix through WASAPI loopback into a 24-band analyzer with onset and silence detection.
-- Renders on a chosen monitor, borderless and always on top, through wgpu (Vulkan or DX12).
+- Renders on a chosen monitor, borderless and always on top, through wgpu (Vulkan or DX12);
+  when that monitor is missing it opens a plain window instead of covering rekordbox.
   Four scenes read one uniform block (beat, bar and phrase phase, intensity, drop countdown,
   24 bands, five theme colours): `pulse`, `ring`, `warp`, `voronoi`. Shaders are plain WGSL
   files and reload while the app runs; a broken shader keeps the last good one and shows the
-  compiler message in the HUD.
+  compiler message in the HUD, and a broken or missing file at start falls back to the copy
+  built into the binary.
 - A Now Playing card with the artwork, title, artists and a metadata line, crossfading over
   1.2 s when the track changes. Artwork decodes on a worker thread.
 - A HUD with frame time, p99 over 120 frames, transport, phrase, drop countdown and the last
@@ -43,8 +45,6 @@ What works, verified against a real rekordbox 7.2.18 library on an RTX 3050 Ti l
 | pulse | warp | voronoi |
 | --- | --- | --- |
 | ![](docs/img/scene-pulse.png) | ![](docs/img/scene-warp.png) | ![](docs/img/scene-voronoi.png) |
-
-![Settings panel](docs/img/settings.png)
 
 ## Run it
 
@@ -73,8 +73,9 @@ Keys in the output window:
 | Left, Right | Previous or next scene |
 | Space, Home | Pause or resume the simulator, back to the start |
 | [ , ] | Simulator rate down or up by 1 % |
+| B | Blackout: black output until pressed again |
 | F | Toggle fullscreen |
-| Esc | Quit |
+| Esc | Close the settings panel, or quit |
 
 Other flags: `--bench 20` runs for 20 s without vsync and prints frame statistics;
 `--screenshot out.png` saves a frame a second before exit; `--settings` opens the panel at

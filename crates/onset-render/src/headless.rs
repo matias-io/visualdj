@@ -23,26 +23,19 @@ impl Headless {
 
     pub fn with_gpu(gpu: Gpu, size: (u32, u32)) -> Self {
         let format = wgpu::TextureFormat::Rgba8UnormSrgb;
-        let texture = gpu.device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("headless target"),
-            size: wgpu::Extent3d {
-                width: size.0,
-                height: size.1,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
-            view_formats: &[],
-        });
+        let texture = target_texture(&gpu, size, format);
         Self {
             gpu,
             size,
             format,
             texture,
         }
+    }
+
+    /// Replaces the target with one of a new size, as a window resize would.
+    pub fn resize(&mut self, size: (u32, u32)) {
+        self.size = size;
+        self.texture = target_texture(&self.gpu, size, self.format);
     }
 
     pub fn view(&self) -> wgpu::TextureView {
@@ -60,6 +53,23 @@ impl Headless {
     pub fn read_back(&self) -> Vec<u8> {
         read_texture(&self.gpu, &self.texture, self.size)
     }
+}
+
+fn target_texture(gpu: &Gpu, size: (u32, u32), format: wgpu::TextureFormat) -> wgpu::Texture {
+    gpu.device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("headless target"),
+        size: wgpu::Extent3d {
+            width: size.0,
+            height: size.1,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+        view_formats: &[],
+    })
 }
 
 /// Copies a 4-byte-per-pixel texture (any `*8Unorm*` format) back to the CPU, tightly

@@ -258,7 +258,7 @@ impl Overlay {
                 audio_section(ui, config, &self.endpoints, edits);
                 ui.separator();
                 ui.small(
-                    "Tab hides this panel  ·  H HUD  ·  C card  ·  ←/→ scene  ·  F fullscreen  ·  Esc quit",
+                    "Tab hides this panel  ·  H HUD  ·  C card  ·  B blackout  ·  Left/Right scene  ·  F fullscreen  ·  Esc closes, then quits",
                 );
             });
     }
