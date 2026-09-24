@@ -7,6 +7,7 @@ use rustfft::num_complex::Complex32;
 use rustfft::{Fft, FftPlanner};
 use std::collections::VecDeque;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 /// FFT window length, in samples.
 const WINDOW: usize = 2048;
@@ -49,7 +50,14 @@ pub struct Analyzer {
     flux_history: VecDeque<f32>,
     /// Consecutive hops with RMS below `SILENT_RMS`.
     silent_run: u32,
+    /// When the most recent block was pushed, and the features it produced.
+    last_push: Option<Instant>,
+    last: AudioFeatures,
 }
+
+/// Features older than this are reported as silence: the capture stopped delivering blocks
+/// (idle WASAPI endpoint, device removed), so the last bands are stale.
+pub const STALE_AFTER: Duration = Duration::from_millis(300);
 
 impl Analyzer {
     /// Creates an analyzer for a `sample_rate`-Hz mono stream.
@@ -72,12 +80,29 @@ impl Analyzer {
             prev_band_raw: [0.0; BANDS],
             flux_history: VecDeque::with_capacity(FLUX_HISTORY),
             silent_run: 0,
+            last_push: None,
+            last: AudioFeatures::silent(),
         }
     }
 
     /// Feeds `mono` samples in; returns the features for the last hop completed by this call,
     /// or `None` if `mono` did not fill a full hop.
     pub fn push(&mut self, mono: &[f32]) -> Option<AudioFeatures> {
+        self.push_at(mono, Instant::now())
+    }
+
+    /// The freshest features, or [`AudioFeatures::silent`] when no block arrived within
+    /// [`STALE_AFTER`] of `now`.
+    pub fn latest(&self, now: Instant) -> AudioFeatures {
+        match self.last_push {
+            Some(t) if now.saturating_duration_since(t) <= STALE_AFTER => self.last,
+            _ => AudioFeatures::silent(),
+        }
+    }
+
+    /// Like [`Self::push`] with an explicit timestamp (for tests and replay).
+    pub fn push_at(&mut self, mono: &[f32], now: Instant) -> Option<AudioFeatures> {
+        self.last_push = Some(now);
         self.pending.extend_from_slice(mono);
         let mut last = None;
         while self.pending.len() >= HOP {
@@ -125,12 +150,19 @@ impl Analyzer {
             0
         };
 
-        AudioFeatures {
+        let silent = self.silent_run >= SILENT_HOPS;
+        if silent {
+            // Stale envelopes must not keep the visuals moving in silence.
+            self.band_env = [0.0; BANDS];
+        }
+        let features = AudioFeatures {
             bands: self.band_env,
             rms,
-            onset,
-            silent: self.silent_run >= SILENT_HOPS,
-        }
+            onset: onset && !silent,
+            silent,
+        };
+        self.last = features;
+        features
     }
 
     /// Runs the FFT over the current windowed buffer and folds the magnitude spectrum into
@@ -242,5 +274,57 @@ mod tests {
             }
         }
         assert!(fired);
+    }
+}
+
+#[cfg(test)]
+mod staleness_tests {
+    use super::*;
+    use std::time::{Duration, Instant};
+
+    fn sine(freq: f32, secs: f32, sr: u32) -> Vec<f32> {
+        (0..(secs * sr as f32) as usize)
+            .map(|i| (2.0 * std::f32::consts::PI * freq * i as f32 / sr as f32).sin() * 0.5)
+            .collect()
+    }
+
+    #[test]
+    fn silence_after_a_tone_zeroes_the_bands() {
+        let mut a = Analyzer::new(48_000);
+        let mut last = None;
+        for c in sine(440.0, 1.0, 48_000).chunks(256) {
+            if let Some(f) = a.push(c) {
+                last = Some(f);
+            }
+        }
+        assert!(
+            last.unwrap().bands.iter().any(|b| *b > 0.01),
+            "tone must register"
+        );
+        for c in vec![0.0f32; 48_000].chunks(256) {
+            if let Some(f) = a.push(c) {
+                last = Some(f);
+            }
+        }
+        let f = last.unwrap();
+        assert!(f.silent);
+        assert!(f.bands.iter().all(|b| *b < 1e-3), "{:?}", f.bands);
+    }
+
+    #[test]
+    fn latest_reports_silent_when_blocks_stop_arriving() {
+        let t0 = Instant::now();
+        let mut a = Analyzer::new(48_000);
+        for c in sine(440.0, 0.5, 48_000).chunks(256) {
+            a.push_at(c, t0);
+        }
+        let fresh = a.latest(t0 + Duration::from_millis(50));
+        assert!(
+            !fresh.silent,
+            "features are fresh 50 ms after the last block"
+        );
+        let stale = a.latest(t0 + Duration::from_millis(500));
+        assert!(stale.silent);
+        assert!(stale.bands.iter().all(|b| *b == 0.0));
     }
 }
