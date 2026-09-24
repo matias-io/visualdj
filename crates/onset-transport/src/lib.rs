@@ -2,3 +2,7 @@
 //! the playhead is and how fast it moves. The `sim` adapter plays a file itself; others read
 //! rekordbox.
 #![deny(unsafe_code)]
+
+pub mod decode;
+pub mod sim;
+pub mod source;
