@@ -10,14 +10,27 @@ visuals from the artwork's colours, and displays synced lyrics when they exist.
 
 ## Status
 
-Pre-alpha. Nothing renders yet. The current milestone is the data layer and the musical time
-engine, exercised through a developer CLI:
+Pre-alpha, milestone 1 (v0.0.1). Nothing renders yet. What works, all verified against a
+real rekordbox 7.2.18 library:
 
-- `onset-cli library` lists the rekordbox collection (title, artist, BPM, key, artwork).
-- `onset-cli anlz <title>` prints a track's beat grid summary, phrases and cues.
-- `onset-cli sim <title>` plays a track through the built-in simulator and prints beat, bar,
-  phrase and drop-countdown state live.
-- `onset-cli listen` captures the master mix and shows a 24-band meter.
+- Reads `master.db` (SQLCipher, decrypted to a plaintext cache in about 150 ms, WAL included)
+  and loads the collection: title, artists, album, year, key, BPM, duration, file, artwork,
+  hot cues and memory cues.
+- Parses the analysis files: beat grid, phrase structure (Intro, Up, Chorus, Down, Outro and
+  the Low/Mid vocabularies) and cue lists.
+- Models musical time: a jitter-filtered playhead clock, beat/bar/phrase phase, beats to the
+  next phrase, a drop countdown to the next high-energy phrase, upcoming cues, and a director
+  that turns all of that into an intensity envelope with anticipation.
+- Plays a track through a built-in simulator with an exact playhead, and captures the live
+  mix through WASAPI loopback into a 24-band analyzer with onset and silence detection.
+
+Developer CLI (`cargo run -p onset-cli -- <command>`):
+
+- `library [--grep text]` lists the collection.
+- `anlz <title>` prints a track's grid summary, phrases and cues.
+- `sim <title> [--seek s] [--analyze]` plays a track and prints beat, bar, phrase, drop
+  countdown, next cue and intensity live, with an optional band meter.
+- `devices` and `listen [--device name]` list loopback-capable endpoints and meter one.
 
 ## How it reads rekordbox
 
