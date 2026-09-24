@@ -70,6 +70,21 @@ impl PhraseMap {
             .map(|p| p.start_beat - beat)
             .min()
     }
+
+    /// The drop is the Chorus in every mood. In High mood the Up is the build-up leading to
+    /// it, so it is high energy but not the drop.
+    pub fn is_drop(&self, kind: PhraseKind) -> bool {
+        kind == PhraseKind::Chorus
+    }
+
+    /// Beats from `beat` to the start of the next drop beginning after it.
+    pub fn beats_until_drop(&self, beat: u32) -> Option<u32> {
+        self.phrases
+            .iter()
+            .filter(|p| p.start_beat > beat && self.is_drop(p.kind))
+            .map(|p| p.start_beat - beat)
+            .min()
+    }
 }
 
 #[cfg(test)]
@@ -131,6 +146,17 @@ mod tests {
     #[test]
     fn none_after_last_high_energy() {
         assert_eq!(map().beats_until_high_energy(100), None);
+    }
+
+    #[test]
+    fn drop_is_the_chorus_not_the_build_up() {
+        let m = map();
+        assert!(m.is_drop(PhraseKind::Chorus));
+        assert!(!m.is_drop(PhraseKind::Up));
+        // From beat 10 the next drop is the Chorus at 64, not the Up at 32.
+        assert_eq!(m.beats_until_drop(10), Some(54));
+        assert_eq!(m.beats_until_drop(40), Some(24));
+        assert_eq!(m.beats_until_drop(100), None);
     }
 
     #[test]

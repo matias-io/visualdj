@@ -20,7 +20,10 @@ pub struct MusicState {
     pub time_s: f64,
     pub playhead_s: f64,
     pub playing: bool,
+    /// Tempo being played: grid tempo × playback rate (follows the pitch fader).
     pub bpm: f32,
+    /// The analysed tempo at the playhead.
+    pub bpm_grid: f32,
     pub beat_phase: f32,
     pub bar_phase: f32,
     pub phrase_phase: f32,
@@ -43,6 +46,7 @@ impl Default for MusicState {
             playhead_s: 0.0,
             playing: false,
             bpm: 0.0,
+            bpm_grid: 0.0,
             beat_phase: 0.0,
             bar_phase: 0.0,
             phrase_phase: 0.0,
@@ -59,10 +63,13 @@ impl Default for MusicState {
 }
 
 impl MusicState {
+    /// `rate` is the playback rate from the clock (`bpm_now / bpm_original`).
+    #[allow(clippy::too_many_arguments)]
     pub fn assemble(
         time_s: f64,
         playhead_s: f64,
         playing: bool,
+        rate: f64,
         st: &StructureState,
         audio: AudioFeatures,
         intensity: f32,
@@ -72,7 +79,8 @@ impl MusicState {
             time_s,
             playhead_s,
             playing,
-            bpm: st.bpm,
+            bpm: st.bpm * rate as f32,
+            bpm_grid: st.bpm,
             beat_phase: st.beat_phase,
             bar_phase: st.bar_phase,
             phrase_phase: st.phrase_phase,
@@ -107,6 +115,7 @@ mod tests {
             phrase_phase: 0.5,
             next_phrase: Some(PhraseKind::Chorus),
             beats_to_next_phrase: Some(8),
+            in_high_energy: true,
             drop_countdown_beats: Some(8),
             next_cue: None,
         };
@@ -114,12 +123,14 @@ mod tests {
         audio.rms = 0.3;
         audio.silent = false;
 
-        let ms = MusicState::assemble(12.5, 10.0, true, &st, audio, 0.7, None);
+        let ms = MusicState::assemble(12.5, 10.0, true, 1.05, &st, audio, 0.7, None);
 
         assert!((ms.time_s - 12.5).abs() < f64::EPSILON);
         assert!((ms.playhead_s - 10.0).abs() < f64::EPSILON);
         assert!(ms.playing);
-        assert!((ms.bpm - 120.0).abs() < f32::EPSILON);
+        // Displayed tempo follows the pitch fader; the grid tempo stays available.
+        assert!((ms.bpm - 126.0).abs() < 1e-3, "{}", ms.bpm);
+        assert!((ms.bpm_grid - 120.0).abs() < f32::EPSILON);
         assert!((ms.beat_phase - 0.25).abs() < f32::EPSILON);
         assert_eq!(ms.phrase, Some(PhraseKind::Up));
         assert_eq!(ms.next_phrase, Some(PhraseKind::Chorus));

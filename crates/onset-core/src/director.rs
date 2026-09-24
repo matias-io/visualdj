@@ -11,6 +11,10 @@ pub const ANTICIPATION_BEATS: u32 = 16;
 pub const ATTACK_S: f32 = 0.01;
 /// Time constant (seconds) when intensity falls.
 pub const RELEASE_S: f32 = 1.5;
+/// Everything before a drop stays at or below this, so the drop itself always has a step.
+pub const PRE_DROP_CEILING: f32 = 0.8;
+/// Maximum lift added while a drop is announced within `ANTICIPATION_BEATS`.
+pub const ANTICIPATION_LIFT: f32 = 0.15;
 
 #[derive(Debug, Default)]
 pub struct Director {
@@ -28,22 +32,26 @@ impl Director {
 
     /// Where the intensity should be right now, before smoothing.
     pub fn target_intensity(st: &StructureState) -> f32 {
+        let is_drop = st.phrase == Some(PhraseKind::Chorus);
+        if is_drop {
+            return 1.0;
+        }
         let base = match st.phrase {
-            Some(PhraseKind::Chorus) => 1.0,
-            Some(PhraseKind::Up) => 0.45 + 0.50 * st.phrase_phase.clamp(0.0, 1.0),
+            Some(PhraseKind::Up) => 0.45 + 0.30 * st.phrase_phase.clamp(0.0, 1.0),
             Some(PhraseKind::Verse) | None => 0.5,
             Some(PhraseKind::Intro) => 0.35,
             Some(PhraseKind::Bridge | PhraseKind::Down | PhraseKind::Outro) => 0.3,
+            Some(PhraseKind::Chorus) => 1.0,
         };
-        // Anticipation: lift a quiet phrase as the announced drop approaches.
-        let in_high_energy = st.phrase == Some(PhraseKind::Chorus);
+        // Anticipation: lift as the announced drop approaches, but never up to the drop's
+        // own level, so the drop keeps a visible attack.
         let lift = match st.drop_countdown_beats {
-            Some(beats) if beats <= ANTICIPATION_BEATS && !in_high_energy => {
-                0.3 * (1.0 - beats as f32 / ANTICIPATION_BEATS as f32)
+            Some(beats) if beats <= ANTICIPATION_BEATS => {
+                ANTICIPATION_LIFT * (1.0 - beats as f32 / ANTICIPATION_BEATS as f32)
             }
             _ => 0.0,
         };
-        (base + lift).clamp(0.0, 1.0)
+        (base + lift).clamp(0.0, PRE_DROP_CEILING)
     }
 
     /// Force a value (0..1) from the control panel; `None` returns control to the structure.
@@ -107,6 +115,17 @@ mod tests {
         let far = Director::target_intensity(&st(Some(PhraseKind::Intro), 0.5, Some(64)));
         let near = Director::target_intensity(&st(Some(PhraseKind::Intro), 0.5, Some(4)));
         assert!(near > far, "{near} > {far}");
+    }
+
+    /// The end of a build-up must leave a visible step for the drop itself.
+    #[test]
+    fn build_up_leaves_headroom_for_the_drop() {
+        let mut end_of_up = st(Some(PhraseKind::Up), 1.0, Some(1));
+        end_of_up.in_high_energy = true;
+        let before = Director::target_intensity(&end_of_up);
+        let drop = Director::target_intensity(&st(Some(PhraseKind::Chorus), 0.0, None));
+        assert!(before <= PRE_DROP_CEILING + f32::EPSILON, "{before}");
+        assert!(drop - before >= 0.2 - 1e-6, "{before} -> {drop}");
     }
 
     #[test]

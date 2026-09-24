@@ -119,6 +119,21 @@ mod tests {
         assert!((c.rate() - 1.05).abs() < 1e-9);
     }
 
+    /// Pitch fader moved mid-track: the playhead must stay continuous and the new rate must
+    /// drive extrapolation from that point on.
+    #[test]
+    fn rate_change_mid_stream_is_continuous() {
+        let t0 = Instant::now();
+        let mut c = Clock::new();
+        c.observe(&snap(t0, 0, 10.0, 120.0, true));
+        // One second later the read agrees with the prediction and reports +5 %.
+        c.observe(&snap(t0, 1000, 11.0, 126.0, true));
+        let at_change = c.playhead_at(t0 + Duration::from_millis(1000)).unwrap();
+        assert!((at_change - 11.0).abs() < 1e-6, "{at_change}");
+        let later = c.playhead_at(t0 + Duration::from_millis(2000)).unwrap();
+        assert!((later - 12.05).abs() < 1e-6, "{later}");
+    }
+
     #[test]
     fn snaps_on_discontinuity() {
         let t0 = Instant::now();

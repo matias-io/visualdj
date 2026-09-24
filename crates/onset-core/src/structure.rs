@@ -20,7 +20,10 @@ pub struct StructureState {
     pub phrase_phase: f32,
     pub next_phrase: Option<PhraseKind>,
     pub beats_to_next_phrase: Option<u32>,
-    /// Beats until the next high-energy phrase starts (the "drop"), when one is ahead.
+    /// Whether the current phrase is high energy for the track's mood (Chorus, or Up in High
+    /// mood). Build-ups count; use `drop_countdown_beats == Some(0..)` for the drop itself.
+    pub in_high_energy: bool,
+    /// Beats until the next drop (Chorus) starts, when one is ahead.
     pub drop_countdown_beats: Option<u32>,
     /// The next cue ahead of the playhead and the seconds until it.
     pub next_cue: Option<(HotCue, f32)>,
@@ -63,8 +66,9 @@ impl<'a> Structure<'a> {
                     st.phrase_phase = ((beat1 - p.start_beat) as f32 + ph) / len;
                     st.beats_to_next_phrase = Some(p.end_beat.saturating_sub(beat1));
                     st.next_phrase = pm.phrases.get(pi + 1).map(|n| n.kind);
+                    st.in_high_energy = pm.is_high_energy(p.kind);
                 }
-                st.drop_countdown_beats = pm.beats_until_high_energy(beat1);
+                st.drop_countdown_beats = pm.beats_until_drop(beat1);
             }
         }
 
@@ -134,13 +138,24 @@ mod tests {
         assert_eq!(st.phrase_label.as_deref(), Some("Intro 1"));
         assert_eq!(st.beats_to_next_phrase, Some(65 - 21));
         assert_eq!(st.next_phrase, Some(PhraseKind::Up));
-        // Up is high energy in High mood, so the drop countdown targets it.
-        assert_eq!(st.drop_countdown_beats, Some(65 - 21));
+        // The drop is the Chorus at beat 129; the Up in between is the build-up.
+        assert_eq!(st.drop_countdown_beats, Some(129 - 21));
+        assert!(!st.in_high_energy);
         assert!(
             (st.phrase_phase - 20.0 / 64.0).abs() < 0.01,
             "{}",
             st.phrase_phase
         );
+    }
+
+    #[test]
+    fn build_up_is_high_energy_but_not_the_drop() {
+        let g = grid();
+        let p = phrases();
+        let st = Structure::new(&g, Some(&p), &[]).at(40_000.0); // grid index 80 => beat 81, inside Up
+        assert_eq!(st.phrase, Some(PhraseKind::Up));
+        assert!(st.in_high_energy);
+        assert_eq!(st.drop_countdown_beats, Some(129 - 81));
     }
 
     #[test]
