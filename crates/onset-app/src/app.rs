@@ -1,20 +1,27 @@
 //! The output window: borderless fullscreen on the chosen monitor, a wgpu surface, and the
-//! frame loop. Rendering content arrives in later tasks; this task proves the window, the
-//! surface and the hotkeys.
+//! frame loop that renders the engine's latest `MusicState` through the active scene.
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use onset_core::music_state::MusicState;
+use onset_render::assets::shader_dir;
 use onset_render::gpu::Gpu;
+use onset_render::renderer::Renderer;
+use onset_render::scene::FullscreenScene;
 use winit::application::ApplicationHandler;
 use winit::dpi::PhysicalSize;
 use winit::event::{ElementState, KeyEvent, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow};
 use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::monitor::MonitorHandle;
-use winit::window::{Fullscreen, Window, WindowAttributes, WindowId};
+use winit::window::{Fullscreen, Window, WindowAttributes, WindowId, WindowLevel};
 
 use crate::config::{Config, MonitorChoice, PresentModeChoice};
+use crate::engine::{Engine, EngineCommand};
 use crate::monitors::{MonitorInfo, choose};
+
+/// Scene shader files shipped in `assets/shaders/`, in menu order.
+pub const BUILTIN_SCENES: &[&str] = &["pulse"];
 
 pub struct AppOptions {
     pub config: Config,
@@ -22,6 +29,7 @@ pub struct AppOptions {
     pub monitor: Option<MonitorChoice>,
     /// Close automatically after this long (for unattended checks).
     pub exit_after: Option<Duration>,
+    pub engine: Option<Engine>,
 }
 
 struct Surface {
@@ -29,6 +37,7 @@ struct Surface {
     target: wgpu::Surface<'static>,
     gpu: Gpu,
     config: wgpu::SurfaceConfiguration,
+    renderer: Renderer,
 }
 
 pub struct OnsetApp {
@@ -37,7 +46,10 @@ pub struct OnsetApp {
     started: Instant,
     frames: u64,
     fullscreen: bool,
+    paused: bool,
+    rate: f32,
     monitor: Option<MonitorHandle>,
+    last_scene_log: Instant,
 }
 
 fn monitor_infos(event_loop: &ActiveEventLoop) -> (Vec<MonitorHandle>, Vec<MonitorInfo>) {
@@ -55,6 +67,24 @@ fn monitor_infos(event_loop: &ActiveEventLoop) -> (Vec<MonitorHandle>, Vec<Monit
     (handles, infos)
 }
 
+/// Loads every built-in scene whose shader file exists; a broken file is logged and skipped.
+fn load_scenes(gpu: &Gpu, format: wgpu::TextureFormat, renderer: &mut Renderer) {
+    let dir = shader_dir();
+    for name in BUILTIN_SCENES {
+        let path = dir.join(format!("{name}.wgsl"));
+        match std::fs::read_to_string(&path) {
+            Ok(src) => {
+                match FullscreenScene::new(gpu, name, &src, format, &renderer.bindings().layout) {
+                    Ok(scene) => renderer.add_scene(Box::new(scene)),
+                    Err(e) => tracing::error!("{e}"),
+                }
+            }
+            Err(e) => tracing::error!(path = %path.display(), "cannot read scene shader: {e}"),
+        }
+    }
+    tracing::info!(scenes = ?renderer.scene_names(), dir = %dir.display(), "scenes loaded");
+}
+
 impl OnsetApp {
     pub fn new(opts: AppOptions) -> Self {
         Self {
@@ -63,7 +93,10 @@ impl OnsetApp {
             started: Instant::now(),
             frames: 0,
             fullscreen: true,
+            paused: false,
+            rate: 1.0,
             monitor: None,
+            last_scene_log: Instant::now(),
         }
     }
 
@@ -100,7 +133,10 @@ impl OnsetApp {
             .with_title("Onset")
             .with_decorations(false);
         attrs = if self.fullscreen {
-            attrs.with_fullscreen(Some(Fullscreen::Borderless(monitor.clone())))
+            // The projector output must not be covered by stray windows.
+            attrs
+                .with_fullscreen(Some(Fullscreen::Borderless(monitor.clone())))
+                .with_window_level(WindowLevel::AlwaysOnTop)
         } else {
             attrs.with_inner_size(PhysicalSize::new(1280u32, 720u32))
         };
@@ -143,12 +179,19 @@ impl OnsetApp {
             "surface ready"
         );
 
+        let mut renderer = Renderer::new(&gpu, (config.width, config.height));
+        load_scenes(&gpu, format, &mut renderer);
+        if !renderer.set_scene(&self.opts.config.scene) {
+            tracing::info!(requested = %self.opts.config.scene, "scene not found, using the first");
+        }
+
         self.monitor = monitor;
         self.surface = Some(Surface {
             window,
             target: surface,
             gpu,
             config,
+            renderer,
         });
         Ok(())
     }
@@ -161,6 +204,7 @@ impl OnsetApp {
             s.config.width = size.width;
             s.config.height = size.height;
             s.target.configure(&s.gpu.device, &s.config);
+            s.renderer.resize(&s.gpu, (size.width, size.height));
             tracing::info!(
                 width = size.width,
                 height = size.height,
@@ -176,7 +220,6 @@ impl OnsetApp {
         let frame = match s.target.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(f) => f,
             wgpu::CurrentSurfaceTexture::Suboptimal(f) => {
-                // Still presentable; reconfigure so the next frame matches the surface.
                 s.target.configure(&s.gpu.device, &s.config);
                 f
             }
@@ -195,39 +238,36 @@ impl OnsetApp {
         let view = frame
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
+        let ms: Arc<MusicState> = self
+            .opts
+            .engine
+            .as_ref()
+            .map_or_else(|| Arc::new(MusicState::default()), Engine::state);
         let mut enc = s
             .gpu
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("frame"),
             });
-        {
-            // A slow pulse so a human can tell the window is alive before scenes exist.
-            let t = self.started.elapsed().as_secs_f64();
-            let pulse = 0.04 + 0.03 * (t * 1.5).sin().mul_add(0.5, 0.5);
-            let _pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("clear"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &view,
-                    depth_slice: None,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color {
-                            r: pulse,
-                            g: pulse,
-                            b: pulse * 1.3,
-                            a: 1.0,
-                        }),
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                ..Default::default()
-            });
-        }
+        let time_s = self.started.elapsed().as_secs_f32();
+        s.renderer.render(&s.gpu, &mut enc, &view, &ms, time_s);
         s.gpu.queue.submit([enc.finish()]);
         s.window.pre_present_notify();
         s.gpu.queue.present(frame);
         self.frames += 1;
+
+        // A once-a-second line so an unattended run leaves a trace of what it showed.
+        if self.last_scene_log.elapsed() >= Duration::from_secs(1) {
+            self.last_scene_log = Instant::now();
+            tracing::debug!(
+                scene = s.renderer.active_scene().unwrap_or("-"),
+                playhead = ms.playhead_s,
+                phrase = ?ms.phrase,
+                drop = ?ms.drop_countdown_beats,
+                intensity = ms.intensity,
+                "frame"
+            );
+        }
     }
 
     fn toggle_fullscreen(&mut self) {
@@ -237,6 +277,11 @@ impl OnsetApp {
                 .fullscreen
                 .then(|| Fullscreen::Borderless(self.monitor.clone()));
             s.window.set_fullscreen(mode);
+            s.window.set_window_level(if self.fullscreen {
+                WindowLevel::AlwaysOnTop
+            } else {
+                WindowLevel::Normal
+            });
         }
     }
 
@@ -251,6 +296,51 @@ impl OnsetApp {
             KeyCode::KeyC => {
                 self.opts.config.show_card = !self.opts.config.show_card;
                 tracing::info!(card = self.opts.config.show_card, "toggle");
+            }
+            KeyCode::Space => {
+                self.paused = !self.paused;
+                if let Some(e) = &self.opts.engine {
+                    e.command(if self.paused {
+                        EngineCommand::Pause
+                    } else {
+                        EngineCommand::Resume
+                    });
+                }
+            }
+            KeyCode::Home => {
+                if let Some(e) = &self.opts.engine {
+                    e.command(EngineCommand::Seek(0.0));
+                }
+            }
+            KeyCode::BracketLeft | KeyCode::BracketRight => {
+                self.rate += if key == KeyCode::BracketRight {
+                    0.01
+                } else {
+                    -0.01
+                };
+                self.rate = self.rate.clamp(0.5, 1.5);
+                if let Some(e) = &self.opts.engine {
+                    e.command(EngineCommand::SetRate(self.rate));
+                }
+                tracing::info!(rate = self.rate, "sim rate");
+            }
+            KeyCode::KeyR => {
+                if let (Some(e), Some(title)) = (&self.opts.engine, &self.opts.config.sim_track) {
+                    e.command(EngineCommand::LoadTrack(title.clone()));
+                }
+            }
+            KeyCode::ArrowRight | KeyCode::ArrowLeft => {
+                if let Some(s) = self.surface.as_mut() {
+                    if key == KeyCode::ArrowRight {
+                        s.renderer.next_scene();
+                    } else {
+                        s.renderer.prev_scene();
+                    }
+                    if let Some(name) = s.renderer.active_scene() {
+                        self.opts.config.scene = name.to_string();
+                        tracing::info!(scene = name, "switched");
+                    }
+                }
             }
             _ => {}
         }
