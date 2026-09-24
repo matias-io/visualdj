@@ -18,9 +18,13 @@ parking_lot.workspace = true
 symphonia.workspace = true
 cpal.workspace = true
 serde.workspace = true
+toml.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 windows-sys.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
 
 [lints]
 workspace = true

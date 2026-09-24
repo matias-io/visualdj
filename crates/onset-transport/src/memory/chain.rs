@@ -6,7 +6,7 @@
 //! offset plus a "final offset"; here they are folded into the last hop.
 use serde::{Deserialize, Serialize};
 
-use super::process::Process;
+use super::reader::{Mem, resolve_chain};
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Chain {
@@ -18,16 +18,8 @@ pub struct Chain {
 
 impl Chain {
     /// Address of the value, or `None` when a hop reads an unreadable address.
-    pub fn resolve(&self, p: &Process) -> Option<u64> {
-        let mut addr = p.module_base.checked_add(self.root)?;
-        for hop in &self.hops {
-            let next = p.read_u64(addr).ok()?;
-            if next == 0 {
-                return None;
-            }
-            addr = next.checked_add(*hop)?;
-        }
-        Some(addr)
+    pub fn resolve(&self, mem: &impl Mem) -> Option<u64> {
+        resolve_chain(mem, self)
     }
 
     /// A chain from `rkbx_link`'s line format: `ROOT o1 o2 ... FINAL`, all hex.
