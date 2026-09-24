@@ -2,6 +2,7 @@
 //! `MusicState` and the director that turns structure into intensity. No I/O lives here.
 #![forbid(unsafe_code)]
 
+pub mod audio_features;
 pub mod clock;
 pub mod director;
 pub mod grid;
