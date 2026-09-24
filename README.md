@@ -54,15 +54,20 @@ Build the release binary once (about five minutes the first time, a minute after
 cargo build --release
 ```
 
-The binary is `targetelease\onset.exe` (`target/release/onset` in a Unix shell). It is a
+The binary is `target\release\onset.exe` (`target/release/onset` in a Unix shell). It is a
 single file; keep the `assets\` folder next to it or run it from the repository root, and it
 also carries built-in copies of the shaders and fonts so it starts without them.
 
-Start the output window with the simulator playing a title from your rekordbox collection:
+Start the output window. With rekordbox running and calibrated it follows the master deck;
+otherwise it waits:
 
 ```bash
-targetelease\onset.exe --monitor 1 --sim "Move" --scene ring
+target\release\onset.exe --monitor 1 --scene ring
 ```
+
+For development without rekordbox, `--sim "<title>"` plays a track from your library through
+the built-in simulator instead. That is a developer tool: Onset never plays music on its own
+in normal use.
 
 A debug build (`cargo build`, binary at `target\debug\onset.exe`) starts faster to compile but
 renders several times slower; use it for shader work, not for a show.
@@ -96,6 +101,29 @@ Developer CLI (`cargo run -p onset-cli -- <command>`):
 - `sim <title> [--seek s] [--analyze]` plays a track and prints beat, bar, phrase, drop
   countdown, next cue and intensity live, with an optional band meter.
 - `devices` and `listen [--device name]` list loopback-capable endpoints and meter one.
+
+## Connecting to rekordbox
+
+Onset reads rekordbox's live state (master deck, position, tempo, loaded track) from the
+rekordbox process. Where those values live changes with every rekordbox release, so each
+version needs a one-time calibration that writes `offsets\<version>.toml`. Until that file
+exists the HUD says `no offsets for rekordbox 7.2.18` and Onset idles.
+
+Calibrate with rekordbox open in Performance mode and the decks to yourself:
+
+```bash
+target\release\onset-cli.exe calibrate
+```
+
+It walks through five steps and waits for Enter after each: play a track on deck 1 as
+MASTER; load a different track on deck 1 and play it; stop deck 1 and play deck 2; press
+MASTER on deck 2; press MASTER on deck 1. It asks for the titles and the BPM shown, keeps
+only the memory paths that followed each change, and writes the offsets file. `--auto`
+does the same without the keyboard: it announces each step, waits (`--step-seconds`, default
+30) and works the titles and tempo out itself.
+
+Then start Onset normally. Nothing is written to rekordbox; the reader opens the process
+with read-only access.
 
 ## Writing a scene
 
