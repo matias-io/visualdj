@@ -2592,9 +2592,11 @@ dependencies = [
  "crossbeam-channel",
  "onset-core",
  "parking_lot",
+ "serde",
  "symphonia",
  "thiserror 2.0.21",
  "tracing",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]

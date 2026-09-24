@@ -42,6 +42,14 @@ rekordcrate = { git = "https://github.com/grufkork/rekordcrate.git", branch = "m
 binrw = "0.14"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
 notify = "8.2"
+windows-sys = { version = "0.60", features = [
+    "Win32_Foundation",
+    "Win32_Storage_FileSystem",
+    "Win32_System_Diagnostics_Debug",
+    "Win32_System_Diagnostics_ToolHelp",
+    "Win32_System_Memory",
+    "Win32_System_Threading",
+] }
 
 symphonia = { version = "0.6", default-features = false, features = ["flac", "mp3", "wav", "pcm"] }
 cpal = "0.18"

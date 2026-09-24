@@ -17,6 +17,10 @@ crossbeam-channel.workspace = true
 parking_lot.workspace = true
 symphonia.workspace = true
 cpal.workspace = true
+serde.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys.workspace = true
 
 [lints]
 workspace = true

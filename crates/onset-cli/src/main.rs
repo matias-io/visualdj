@@ -3,6 +3,8 @@
 mod common;
 mod library_cmds;
 mod live;
+#[cfg(windows)]
+mod memscan;
 
 use std::path::PathBuf;
 
@@ -70,6 +72,41 @@ enum Command {
         #[arg(long, default_value_t = 0.0)]
         seconds: f64,
     },
+    /// Scan a running rekordbox for its live values and the pointer chains that reach them
+    Memscan {
+        /// BPM shown on the playing deck, to confirm tempo candidates
+        #[arg(long)]
+        bpm: Option<f32>,
+        /// Title of the track loaded on the deck of interest (finds its text block and path)
+        #[arg(long)]
+        title: Option<String>,
+        /// rekordbox data folder, for the track's analysis path
+        #[arg(long)]
+        app_dir: Option<PathBuf>,
+        /// Skip the playback-counter search (nothing is playing)
+        #[arg(long)]
+        no_counters: bool,
+        /// Window between the two memory snapshots that detect audio counters
+        #[arg(long, default_value_t = 300)]
+        dt_ms: u64,
+        /// Pointer scan depth (hops from a static root to the value)
+        #[arg(long, default_value_t = 6)]
+        depth: usize,
+        /// Intermediate pointers followed per level
+        #[arg(long, default_value_t = 48)]
+        branch: usize,
+        /// Only report strings, known tails and counters; skip the pointer scan
+        #[arg(long)]
+        no_pointers: bool,
+        /// Write the full report here
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
+    /// Resolve pointer chains (in the rkbx-link line format) against the running rekordbox
+    Memresolve {
+        /// Chains such as "05C64808 2A0 10 1175 109A 0"
+        chains: Vec<String>,
+    },
 }
 
 fn main() -> anyhow::Result<()> {
@@ -95,6 +132,34 @@ fn main() -> anyhow::Result<()> {
         } => live::sim(app_dir, &title, seek, gain, analyze, seconds)?,
         Command::Devices => live::devices(),
         Command::Listen { device, seconds } => live::listen(device.as_deref(), seconds)?,
+        #[cfg(windows)]
+        Command::Memscan {
+            bpm,
+            title,
+            app_dir,
+            no_counters,
+            dt_ms,
+            depth,
+            branch,
+            no_pointers,
+            out,
+        } => memscan::memscan(&memscan::MemscanArgs {
+            bpm,
+            title,
+            app_dir,
+            dt_ms,
+            depth,
+            branch,
+            skip_pointers: no_pointers,
+            skip_counters: no_counters,
+            out,
+        })?,
+        #[cfg(not(windows))]
+        Command::Memscan { .. } => anyhow::bail!("memscan needs Windows"),
+        #[cfg(windows)]
+        Command::Memresolve { chains } => memscan::memresolve(&chains)?,
+        #[cfg(not(windows))]
+        Command::Memresolve { .. } => anyhow::bail!("memresolve needs Windows"),
     }
     Ok(())
 }
