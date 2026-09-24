@@ -2488,6 +2488,7 @@ dependencies = [
  "egui",
  "egui-wgpu",
  "egui-winit",
+ "image",
  "onset-audio",
  "onset-core",
  "onset-rekordbox",
