@@ -58,65 +58,70 @@ impl Headless {
     }
 
     pub fn read_back(&self) -> Vec<u8> {
-        let (width, height) = self.size;
-        let stride = padded_bytes_per_row(width);
-        let buffer = self.gpu.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("headless readback"),
-            size: u64::from(stride) * u64::from(height),
-            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-            mapped_at_creation: false,
-        });
-        let mut enc = self
-            .gpu
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("readback"),
-            });
-        enc.copy_texture_to_buffer(
-            wgpu::TexelCopyTextureInfo {
-                texture: &self.texture,
-                mip_level: 0,
-                origin: wgpu::Origin3d::ZERO,
-                aspect: wgpu::TextureAspect::All,
-            },
-            wgpu::TexelCopyBufferInfo {
-                buffer: &buffer,
-                layout: wgpu::TexelCopyBufferLayout {
-                    offset: 0,
-                    bytes_per_row: Some(stride),
-                    rows_per_image: Some(height),
-                },
-            },
-            wgpu::Extent3d {
-                width,
-                height,
-                depth_or_array_layers: 1,
-            },
-        );
-        self.gpu.queue.submit([enc.finish()]);
-
-        let slice = buffer.slice(..);
-        let (tx, rx) = std::sync::mpsc::channel();
-        slice.map_async(wgpu::MapMode::Read, move |r| {
-            let _ = tx.send(r);
-        });
-        self.gpu
-            .device
-            .poll(wgpu::PollType::wait_indefinitely())
-            .expect("device poll");
-        rx.recv().expect("map callback").expect("buffer mapped");
-
-        let data = slice.get_mapped_range().expect("mapped range");
-        let row_bytes = (width * 4) as usize;
-        let mut out = Vec::with_capacity(row_bytes * height as usize);
-        for row in 0..height as usize {
-            let start = row * stride as usize;
-            out.extend_from_slice(&data[start..start + row_bytes]);
-        }
-        drop(data);
-        buffer.unmap();
-        out
+        read_texture(&self.gpu, &self.texture, self.size)
     }
+}
+
+/// Copies a 4-byte-per-pixel texture (any `*8Unorm*` format) back to the CPU, tightly
+/// packed, in the texture's own channel order. Blocks until the GPU is done; for tests
+/// and screenshots, not the frame loop.
+pub fn read_texture(gpu: &Gpu, texture: &wgpu::Texture, size: (u32, u32)) -> Vec<u8> {
+    let (width, height) = size;
+    let stride = padded_bytes_per_row(width);
+    let buffer = gpu.device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("readback"),
+        size: u64::from(stride) * u64::from(height),
+        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+        mapped_at_creation: false,
+    });
+    let mut enc = gpu
+        .device
+        .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("readback"),
+        });
+    enc.copy_texture_to_buffer(
+        wgpu::TexelCopyTextureInfo {
+            texture,
+            mip_level: 0,
+            origin: wgpu::Origin3d::ZERO,
+            aspect: wgpu::TextureAspect::All,
+        },
+        wgpu::TexelCopyBufferInfo {
+            buffer: &buffer,
+            layout: wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(stride),
+                rows_per_image: Some(height),
+            },
+        },
+        wgpu::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        },
+    );
+    gpu.queue.submit([enc.finish()]);
+
+    let slice = buffer.slice(..);
+    let (tx, rx) = std::sync::mpsc::channel();
+    slice.map_async(wgpu::MapMode::Read, move |r| {
+        let _ = tx.send(r);
+    });
+    gpu.device
+        .poll(wgpu::PollType::wait_indefinitely())
+        .expect("device poll");
+    rx.recv().expect("map callback").expect("buffer mapped");
+
+    let data = slice.get_mapped_range().expect("mapped range");
+    let row_bytes = (width * 4) as usize;
+    let mut out = Vec::with_capacity(row_bytes * height as usize);
+    for row in 0..height as usize {
+        let start = row * stride as usize;
+        out.extend_from_slice(&data[start..start + row_bytes]);
+    }
+    drop(data);
+    buffer.unmap();
+    out
 }
 
 /// FNV-1a over the pixel bytes; stable across runs for regression tests.

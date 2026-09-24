@@ -33,6 +33,7 @@ egui.workspace = true
 egui-wgpu.workspace = true
 egui-winit.workspace = true
 pollster.workspace = true
+image.workspace = true
 
 [lints]
 workspace = true

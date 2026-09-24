@@ -35,7 +35,7 @@ pub struct EngineConfig {
     pub capture_audio: bool,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum EngineCommand {
     Pause,
     Resume,
@@ -52,10 +52,29 @@ pub enum EngineStatus {
     Error(String),
 }
 
+/// One library row as the settings panel lists it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TrackEntry {
+    /// What `EngineCommand::LoadTrack` takes.
+    pub title: String,
+    /// "Artist — Title", what the panel shows.
+    pub label: String,
+}
+
+/// "Artist — Title", or just the title when rekordbox has no artist for it.
+pub fn track_label(artist: &str, title: &str) -> String {
+    if artist.trim().is_empty() {
+        title.to_string()
+    } else {
+        format!("{artist} — {title}")
+    }
+}
+
 pub struct Engine {
     state: Arc<ArcSwap<MusicState>>,
     status: Arc<ArcSwap<EngineStatus>>,
     commands: crossbeam_channel::Sender<EngineCommand>,
+    tracks: Vec<TrackEntry>,
     _thread: std::thread::JoinHandle<()>,
 }
 
@@ -116,6 +135,16 @@ impl Engine {
             None => RekordboxPaths::discover()?,
         };
         let library = Library::open(&paths, &cfg.cache_dir)?;
+        let mut tracks: Vec<TrackEntry> = library
+            .tracks()
+            .iter()
+            .filter(|t| t.file_path.as_ref().is_some_and(|p| p.exists()))
+            .map(|t| TrackEntry {
+                title: t.title.clone(),
+                label: track_label(&t.artist, &t.title),
+            })
+            .collect();
+        tracks.sort_by_key(|t| t.label.to_lowercase());
         let initial = match &cfg.sim_track {
             Some(title) => Some(load_track(&library, &paths, title, &cfg)?),
             None => None,
@@ -144,6 +173,7 @@ impl Engine {
             state,
             status,
             commands: tx,
+            tracks,
             _thread: thread,
         })
     }
@@ -155,6 +185,11 @@ impl Engine {
 
     pub fn status(&self) -> EngineStatus {
         (**self.status.load()).clone()
+    }
+
+    /// Playable library tracks (audio file present), sorted by artist and title.
+    pub fn tracks(&self) -> &[TrackEntry] {
+        &self.tracks
     }
 
     pub fn command(&self, cmd: EngineCommand) {
@@ -275,6 +310,12 @@ mod tests {
     use super::*;
     use std::path::PathBuf;
     use std::time::Duration;
+
+    #[test]
+    fn track_label_drops_the_dash_without_an_artist() {
+        assert_eq!(track_label("Adam Port", "Move"), "Adam Port — Move");
+        assert_eq!(track_label("  ", "HORN"), "HORN");
+    }
 
     fn fixtures() -> Option<PathBuf> {
         let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/private");

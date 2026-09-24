@@ -1,8 +1,10 @@
 //! Onset: real-time, structure-aware visuals for rekordbox DJs.
 mod app;
+mod bench;
 mod config;
 mod engine;
 mod monitors;
+mod overlay;
 
 use std::path::PathBuf;
 use std::time::Duration;
@@ -45,6 +47,15 @@ struct Cli {
     /// Print where the config file lives and exit
     #[arg(long)]
     config_path: bool,
+    /// Run for this many seconds without vsync, then print frame statistics and exit
+    #[arg(long, value_name = "SECONDS")]
+    bench: Option<f64>,
+    /// Start with the settings panel open (Tab toggles it)
+    #[arg(long)]
+    settings: bool,
+    /// Save one frame as PNG here, a second before exit (or 3 s in without --exit-after)
+    #[arg(long, value_name = "PNG")]
+    screenshot: Option<PathBuf>,
 }
 
 fn parse_monitor(s: &str) -> MonitorChoice {
@@ -101,7 +112,10 @@ fn main() -> anyhow::Result<()> {
     let opts = AppOptions {
         config,
         monitor: cli.monitor.as_deref().map(parse_monitor),
-        exit_after: cli.exit_after.map(Duration::from_secs_f64),
+        exit_after: cli.exit_after.or(cli.bench).map(Duration::from_secs_f64),
+        bench: cli.bench.is_some(),
+        settings_open: cli.settings,
+        screenshot: cli.screenshot.clone(),
         engine,
     };
     let event_loop = EventLoop::new()?;

@@ -9,6 +9,7 @@ use crate::card::{Card, CardFrame};
 use crate::gpu::Gpu;
 use crate::hot_reload::ShaderWatcher;
 use crate::hud::{Hud, HudInfo};
+use crate::quad::{QuadPipeline, QuadTexture};
 use crate::scene::{FrameBindings, Scene, ShaderError};
 use crate::text::{TextItem, TextLayer};
 use crate::uniforms::FrameUniforms;
@@ -19,7 +20,11 @@ pub struct FrameStats {
     pub cpu_ms: f32,
 }
 
+/// Lowest internal scale the overlay offers; below this the upscale looks like a mistake.
+pub const MIN_INTERNAL_SCALE: f32 = 0.5;
+
 pub struct Renderer {
+    format: wgpu::TextureFormat,
     bindings: FrameBindings,
     scenes: Vec<Box<dyn Scene>>,
     active: usize,
@@ -34,11 +39,16 @@ pub struct Renderer {
     /// Window DPI factor; the HUD scales with it, the card scales with the frame height.
     scale: f32,
     last_cpu_ms: f32,
+    /// Scenes render at `internal_scale` of the output and are blitted up; 1.0 draws direct.
+    internal_scale: f32,
+    blit: QuadPipeline,
+    offscreen: Option<QuadTexture>,
 }
 
 impl Renderer {
     pub fn new(gpu: &Gpu, size: (u32, u32), format: wgpu::TextureFormat) -> Self {
         Self {
+            format,
             bindings: FrameBindings::new(gpu),
             scenes: Vec::new(),
             active: 0,
@@ -51,6 +61,45 @@ impl Renderer {
             show_hud: false,
             scale: 1.0,
             last_cpu_ms: 0.0,
+            internal_scale: 1.0,
+            blit: QuadPipeline::new(gpu, format),
+            offscreen: None,
+        }
+    }
+
+    /// Fraction of the output resolution scenes render at, clamped to
+    /// [`MIN_INTERNAL_SCALE`]..=1.0.
+    pub fn set_internal_scale(&mut self, gpu: &Gpu, scale: f32) {
+        self.internal_scale = if scale.is_finite() {
+            scale.clamp(MIN_INTERNAL_SCALE, 1.0)
+        } else {
+            1.0
+        };
+        self.rebuild_offscreen(gpu);
+    }
+
+    pub fn internal_scale(&self) -> f32 {
+        self.internal_scale
+    }
+
+    /// The size scenes actually render at.
+    pub fn internal_size(&self) -> (u32, u32) {
+        if self.internal_scale >= 1.0 {
+            self.size
+        } else {
+            (
+                ((self.size.0 as f32 * self.internal_scale).round() as u32).max(1),
+                ((self.size.1 as f32 * self.internal_scale).round() as u32).max(1),
+            )
+        }
+    }
+
+    fn rebuild_offscreen(&mut self, gpu: &Gpu) {
+        let internal = self.internal_size();
+        self.offscreen = (self.internal_scale < 1.0)
+            .then(|| self.blit.offscreen_target(gpu, internal, self.format));
+        for s in &mut self.scenes {
+            s.resize(gpu, internal);
         }
     }
 
@@ -182,9 +231,7 @@ impl Renderer {
 
     pub fn resize(&mut self, gpu: &Gpu, size: (u32, u32)) {
         self.size = size;
-        for s in &mut self.scenes {
-            s.resize(gpu, size);
-        }
+        self.rebuild_offscreen(gpu);
     }
 
     /// Writes the uniforms for `ms`, renders the active scene into `target`, then the card
@@ -199,10 +246,35 @@ impl Renderer {
     ) -> FrameStats {
         let started = Instant::now();
         self.hud.record(time_s, self.last_cpu_ms);
+        let internal = self.internal_size();
         self.bindings
-            .write(gpu, &FrameUniforms::from_state(ms, self.size, time_s));
-        if let Some(scene) = self.scenes.get_mut(self.active) {
-            scene.render(gpu, encoder, target, &self.bindings);
+            .write(gpu, &FrameUniforms::from_state(ms, internal, time_s));
+        match (&self.offscreen, self.scenes.get_mut(self.active)) {
+            (Some(off), Some(scene)) => {
+                scene.render(gpu, encoder, &off.view, &self.bindings);
+                off.place(
+                    gpu,
+                    [0.0, 0.0, self.size.0 as f32, self.size.1 as f32],
+                    self.size,
+                    1.0,
+                );
+                let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("upscale"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: target,
+                        depth_slice: None,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                            store: wgpu::StoreOp::Store,
+                        },
+                    })],
+                    ..Default::default()
+                });
+                self.blit.draw(&mut pass, off);
+            }
+            (None, Some(scene)) => scene.render(gpu, encoder, target, &self.bindings),
+            (_, None) => {}
         }
 
         let mut items: Vec<TextItem> = Vec::new();

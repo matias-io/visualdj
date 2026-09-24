@@ -61,6 +61,8 @@ pub struct QuadPipeline {
 /// A texture plus the bind group and uniform buffer that place it on screen.
 pub struct QuadTexture {
     _texture: wgpu::Texture,
+    /// The whole texture; render targets draw into it.
+    pub view: wgpu::TextureView,
     bind_group: wgpu::BindGroup,
     uniforms: wgpu::Buffer,
     pub size: (u32, u32),
@@ -190,6 +192,37 @@ impl QuadPipeline {
             },
             size,
         );
+        self.wrap(gpu, texture)
+    }
+
+    /// A render target that scenes draw into and this pipeline then blits, upscaled, to the
+    /// output. `format` must match the output so colours survive the round trip.
+    pub fn offscreen_target(
+        &self,
+        gpu: &Gpu,
+        size: (u32, u32),
+        format: wgpu::TextureFormat,
+    ) -> QuadTexture {
+        let texture = gpu.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("offscreen scene target"),
+            size: wgpu::Extent3d {
+                width: size.0.max(1),
+                height: size.1.max(1),
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::RENDER_ATTACHMENT,
+            view_formats: &[],
+        });
+        self.wrap(gpu, texture)
+    }
+
+    /// Binds an existing texture with its own placement uniforms.
+    fn wrap(&self, gpu: &Gpu, texture: wgpu::Texture) -> QuadTexture {
+        let size = (texture.width(), texture.height());
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
         let uniforms = gpu.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("quad uniforms"),
@@ -216,10 +249,11 @@ impl QuadPipeline {
             ],
         });
         QuadTexture {
+            view,
             _texture: texture,
             bind_group,
             uniforms,
-            size: (width, height),
+            size,
         }
     }
 
