@@ -115,9 +115,15 @@ enum Command {
         /// Where to write the offsets file (default: `offsets/` or `ONSET_OFFSETS`)
         #[arg(long)]
         out_dir: Option<PathBuf>,
-        /// Title of the track already playing on deck 1 (skips the first question)
+        /// No keyboard: announce each step, wait, and work titles and tempo out itself
         #[arg(long)]
-        title: Option<String>,
+        auto: bool,
+        /// Seconds to wait after announcing a step in --auto mode
+        #[arg(long, default_value_t = 30)]
+        step_seconds: u64,
+        /// rekordbox data folder (for the library's tempo in --auto mode)
+        #[arg(long)]
+        app_dir: Option<PathBuf>,
     },
 }
 
@@ -173,8 +179,24 @@ fn main() -> anyhow::Result<()> {
         #[cfg(not(windows))]
         Command::Memresolve { .. } => anyhow::bail!("memresolve needs Windows"),
         #[cfg(windows)]
-        Command::Calibrate { out_dir, title } => {
-            calibrate::calibrate(&out_dir.unwrap_or_else(calibrate::default_out_dir), title)?;
+        Command::Calibrate {
+            out_dir,
+            auto,
+            step_seconds,
+            app_dir,
+        } => {
+            let mode = if auto {
+                calibrate::Mode::Auto {
+                    step: std::time::Duration::from_secs(step_seconds),
+                }
+            } else {
+                calibrate::Mode::Interactive
+            };
+            calibrate::calibrate(
+                &out_dir.unwrap_or_else(calibrate::default_out_dir),
+                mode,
+                app_dir,
+            )?;
         }
         #[cfg(not(windows))]
         Command::Calibrate { .. } => anyhow::bail!("calibrate needs Windows"),
