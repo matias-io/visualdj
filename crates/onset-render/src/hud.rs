@@ -20,6 +20,8 @@ pub struct HudInfo {
     pub size: (u32, u32),
     pub gpu_ms: Option<f32>,
     pub last_error: Option<String>,
+    /// The engine's one-line status ("waiting for rekordbox", "rekordbox: Artist - Title").
+    pub source: String,
 }
 
 pub struct Hud {
@@ -123,7 +125,12 @@ impl Hud {
                 self.cpu_ms
             ),
             format!(
-                "{transport}  ·  {:.1} BPM  ·  {}",
+                "{}  ·  {transport}  ·  {:.1} BPM  ·  {}",
+                if info.source.is_empty() {
+                    "-"
+                } else {
+                    info.source.as_str()
+                },
                 ms.bpm,
                 mmss(ms.playhead_s)
             ),

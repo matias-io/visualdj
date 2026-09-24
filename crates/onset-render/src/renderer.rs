@@ -31,6 +31,8 @@ pub struct Renderer {
     size: (u32, u32),
     /// The most recent hot-reload failure, shown by the HUD until a good reload clears it.
     last_error: Option<String>,
+    /// The engine's status line for the HUD, set by the app each frame.
+    source_line: String,
     text: TextLayer,
     card: Card,
     hud: Hud,
@@ -57,6 +59,7 @@ impl Renderer {
             active: 0,
             size,
             last_error: None,
+            source_line: String::new(),
             text: TextLayer::new(gpu, format),
             card: Card::new(gpu, format),
             hud: Hud::new(),
@@ -114,6 +117,10 @@ impl Renderer {
         for s in &mut self.scenes {
             s.resize(gpu, internal);
         }
+    }
+
+    pub fn set_source_line(&mut self, line: String) {
+        self.source_line = line;
     }
 
     pub fn set_scale(&mut self, scale: f32) {
@@ -330,6 +337,7 @@ impl Renderer {
                 size: self.size,
                 gpu_ms: None,
                 last_error: self.last_error.clone(),
+                source: self.source_line.clone(),
             };
             items.extend(self.hud.items(ms, &info, self.scale));
         }

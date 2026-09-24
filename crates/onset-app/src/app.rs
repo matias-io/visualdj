@@ -188,10 +188,10 @@ fn draw_overlay(
         };
     }
     let idle = EngineStatus::Idle;
-    let (engine_status, tracks): (EngineStatus, &[crate::engine::TrackEntry]) =
+    let (engine_status, tracks, simulator): (EngineStatus, &[crate::engine::TrackEntry], bool) =
         match opts.engine.as_ref() {
-            Some(e) => (e.status(), e.tracks()),
-            None => (idle, &[]),
+            Some(e) => (e.status(), e.tracks(), e.is_simulator()),
+            None => (idle, &[], false),
         };
     let scenes = s.renderer.scene_names();
     let overlay_view = OverlayView {
@@ -200,6 +200,7 @@ fn draw_overlay(
         active_scene: s.renderer.active_scene().unwrap_or("-"),
         tracks,
         status: &engine_status,
+        simulator,
         playhead_s: ms.playhead_s,
         duration_s: ms.track.as_ref().and_then(|t| t.duration_s),
         playing: ms.playing,
@@ -404,6 +405,9 @@ impl OnsetApp {
                 label: Some("frame"),
             });
         let time_s = self.started.elapsed().as_secs_f32();
+        if let Some(e) = &self.opts.engine {
+            s.renderer.set_source_line(e.status().line());
+        }
         let stats = s.renderer.render(&s.gpu, &mut enc, &view, &ms, time_s);
 
         let DrawResult {

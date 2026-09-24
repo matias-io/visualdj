@@ -26,7 +26,8 @@ struct Cli {
     /// Output monitor: a zero-based index, or part of its name (overrides the config)
     #[arg(long)]
     monitor: Option<String>,
-    /// Play this track title through the built-in simulator
+    /// Developer mode: play this library title through the built-in simulator instead of
+    /// reading rekordbox
     #[arg(long)]
     sim: Option<String>,
     /// rekordbox data folder (defaults to %APPDATA%\Pioneer\rekordbox)
@@ -65,6 +66,23 @@ fn parse_monitor(s: &str) -> MonitorChoice {
     )
 }
 
+/// `ONSET_OFFSETS` if set, else `offsets/` beside the executable, else `offsets/` in the
+/// working directory (the development layout).
+fn offsets_dir() -> PathBuf {
+    if let Some(dir) = std::env::var_os("ONSET_OFFSETS") {
+        return PathBuf::from(dir);
+    }
+    if let Ok(exe) = std::env::current_exe()
+        && let Some(dir) = exe.parent()
+    {
+        let beside = dir.join("offsets");
+        if beside.is_dir() {
+            return beside;
+        }
+    }
+    PathBuf::from("offsets")
+}
+
 fn cache_dir() -> PathBuf {
     directories::ProjectDirs::from("", "Onset", "Onset")
         .map_or_else(|| PathBuf::from(".cache"), |d| d.cache_dir().to_path_buf())
@@ -86,15 +104,16 @@ fn main() -> anyhow::Result<()> {
     }
     let config = Config::load();
 
-    let sim_track = cli.sim.clone().or_else(|| config.sim_track.clone());
+    // Onset is a visualiser: rekordbox is the source. The simulator runs only when asked.
     let engine = match Engine::start(EngineConfig {
         app_dir: cli.app_dir.clone(),
         cache_dir: cache_dir(),
-        sim_track,
+        offsets_dir: offsets_dir(),
+        sim_track: cli.sim.clone(),
         sim_seek_s: cli.seek,
         sim_gain: cli.gain,
         audio_device: config.audio_device.clone(),
-        capture_audio: false,
+        capture_audio: cli.sim.is_none(),
     }) {
         Ok(e) => {
             tracing::info!(status = ?e.status(), "engine started");

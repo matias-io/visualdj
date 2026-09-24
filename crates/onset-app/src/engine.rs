@@ -1,5 +1,8 @@
 //! The engine thread: polls the transport, drives the clock, structure, analyzer and
 //! director at 120 Hz, and publishes one `MusicState` for the renderer to read each frame.
+//!
+//! The transport is rekordbox's memory by default. The simulator is a developer tool: it
+//! only runs when asked for explicitly, and Onset never plays music on its own otherwise.
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -7,17 +10,18 @@ use std::time::{Duration, Instant};
 use arc_swap::ArcSwap;
 use onset_audio::analyzer::Analyzer;
 use onset_audio::capture::LoopbackCapture;
+use onset_core::audio_features::AudioFeatures;
 use onset_core::clock::Clock;
 use onset_core::director::Director;
 use onset_core::music_state::MusicState;
 use onset_core::structure::Structure;
 use onset_core::track::{HotCue, TrackMeta};
-use onset_core::transport::TrackRef;
+use onset_core::transport::{TrackRef, TransportSnapshot};
 use onset_rekordbox::anlz::Analysis;
 use onset_rekordbox::library::Library;
 use onset_rekordbox::paths::RekordboxPaths;
 use onset_transport::sim::SimPlayer;
-use onset_transport::source::TransportSource;
+use onset_transport::source::{SourceStatus, TransportSource};
 
 const TICK: Duration = Duration::from_micros(1_000_000 / 120);
 
@@ -25,13 +29,17 @@ pub struct EngineConfig {
     /// rekordbox data folder; `None` discovers `%APPDATA%\Pioneer\rekordbox`.
     pub app_dir: Option<PathBuf>,
     pub cache_dir: PathBuf,
-    /// Title of the track the simulator plays; `None` starts idle.
+    /// Where `<version>.toml` pointer-chain files live for the memory transport.
+    pub offsets_dir: PathBuf,
+    /// Developer mode: play this library title through the simulator instead of reading
+    /// rekordbox. `None` is the normal case.
     pub sim_track: Option<String>,
     pub sim_seek_s: f64,
     pub sim_gain: f32,
     /// Loopback endpoint substring; default output device when `None`.
     pub audio_device: Option<String>,
-    /// Capture the system mix (rekordbox) instead of tapping the simulator's audio.
+    /// Capture the system mix (rekordbox's output) for the analyzer. The simulator taps its
+    /// own audio instead.
     pub capture_audio: bool,
 }
 
@@ -47,9 +55,28 @@ pub enum EngineCommand {
 #[derive(Debug, Clone, PartialEq)]
 pub enum EngineStatus {
     Starting,
+    /// No usable source yet; the text says what is missing ("waiting for rekordbox").
+    Waiting(String),
+    /// A source is connected but no track is loaded on the master deck.
     Idle,
-    Running { source: String, track: String },
+    Running {
+        source: String,
+        track: String,
+    },
     Error(String),
+}
+
+impl EngineStatus {
+    /// One line for the HUD.
+    pub fn line(&self) -> String {
+        match self {
+            Self::Starting => "starting".to_string(),
+            Self::Waiting(why) => why.clone(),
+            Self::Idle => "connected, no track".to_string(),
+            Self::Running { source, track } => format!("{source}: {track}"),
+            Self::Error(e) => format!("error: {e}"),
+        }
+    }
 }
 
 /// One library row as the settings panel lists it.
@@ -75,24 +102,98 @@ pub struct Engine {
     status: Arc<ArcSwap<EngineStatus>>,
     commands: crossbeam_channel::Sender<EngineCommand>,
     tracks: Vec<TrackEntry>,
+    simulator: bool,
     _thread: std::thread::JoinHandle<()>,
 }
 
-struct Loaded {
+/// The track the master deck holds, with everything the structure engine needs.
+struct Current {
     meta: TrackMeta,
-    analysis: Analysis,
+    analysis: Option<Analysis>,
     cues: Vec<HotCue>,
+    /// How the source referred to it, so a repeat read is not a reload.
+    track_ref: TrackRef,
+}
+
+struct SimSource {
     player: SimPlayer,
     tap: crossbeam_channel::Receiver<Vec<f32>>,
     analyzer: Analyzer,
 }
 
-fn load_track(
+enum Source {
+    Sim(Box<SimSource>),
+    Live(Box<dyn TransportSource>),
+}
+
+impl Source {
+    fn name(&self) -> &'static str {
+        match self {
+            Self::Sim(_) => "simulator",
+            Self::Live(s) => s.name(),
+        }
+    }
+
+    fn status(&self) -> SourceStatus {
+        match self {
+            Self::Sim(_) => SourceStatus::Connected,
+            Self::Live(s) => s.status(),
+        }
+    }
+
+    fn poll(&mut self) -> Option<TransportSnapshot> {
+        match self {
+            Self::Sim(s) => s.player.poll(),
+            Self::Live(s) => s.poll(),
+        }
+    }
+}
+
+struct Capture {
+    _stream: LoopbackCapture,
+    rx: crossbeam_channel::Receiver<Vec<f32>>,
+    analyzer: Analyzer,
+}
+
+/// Finds the library row a transport reference points at.
+pub fn resolve_track(library: &Library, r: &TrackRef) -> Option<TrackMeta> {
+    match r {
+        TrackRef::Unknown => None,
+        TrackRef::Id(id) => library.by_id(*id).cloned(),
+        TrackRef::AnalysisPath(path) => library.by_analysis_path(path).cloned(),
+        TrackRef::TitleArtist { title, artist, .. } => library
+            .find_by_title_artist(title, artist)
+            .or_else(|| library.find_by_title_artist(title, ""))
+            .cloned(),
+    }
+}
+
+fn load_current(
+    library: &Library,
+    paths: &RekordboxPaths,
+    meta: TrackMeta,
+    track_ref: TrackRef,
+) -> Current {
+    let analysis = meta.analysis_path.as_deref().and_then(|rel| {
+        onset_rekordbox::anlz::load_analysis(paths, rel)
+            .map_err(|e| tracing::warn!(title = %meta.title, "analysis unavailable: {e}"))
+            .ok()
+    });
+    let cues = library.cues(meta.id);
+    Current {
+        meta,
+        analysis,
+        cues,
+        track_ref,
+    }
+}
+
+fn start_sim(
     library: &Library,
     paths: &RekordboxPaths,
     title: &str,
     cfg: &EngineConfig,
-) -> anyhow::Result<Loaded> {
+) -> anyhow::Result<(SimSource, Current)> {
     let meta = library
         .find_by_title_artist(title, "")
         .ok_or_else(|| anyhow::anyhow!("no track titled {title:?}"))?
@@ -102,25 +203,21 @@ fn load_track(
         .clone()
         .filter(|p| p.exists())
         .ok_or_else(|| anyhow::anyhow!("audio file for {title:?} not found"))?;
-    let rel = meta
-        .analysis_path
-        .as_deref()
-        .ok_or_else(|| anyhow::anyhow!("{title:?} has no analysis file"))?;
-    let analysis = onset_rekordbox::anlz::load_analysis(paths, rel)?;
-    let cues = library.cues(meta.id);
     let player = SimPlayer::start(&file, TrackRef::Id(meta.id), meta.bpm.unwrap_or(120.0))?;
     player.set_gain(cfg.sim_gain);
     player.seek(cfg.sim_seek_s);
     let tap = player.tap_audio();
     let analyzer = Analyzer::new(player.tap_sample_rate());
-    Ok(Loaded {
-        meta,
-        analysis,
-        cues,
-        player,
-        tap,
-        analyzer,
-    })
+    let track_ref = TrackRef::Id(meta.id);
+    let current = load_current(library, paths, meta, track_ref);
+    Ok((
+        SimSource {
+            player,
+            tap,
+            analyzer,
+        },
+        current,
+    ))
 }
 
 impl Engine {
@@ -145,13 +242,22 @@ impl Engine {
             })
             .collect();
         tracks.sort_by_key(|t| t.label.to_lowercase());
-        let initial = match &cfg.sim_track {
-            Some(title) => Some(load_track(&library, &paths, title, &cfg)?),
-            None => None,
+
+        let (source, current) = match &cfg.sim_track {
+            Some(title) => {
+                let (sim, current) = start_sim(&library, &paths, title, &cfg)?;
+                (Source::Sim(Box::new(sim)), Some(current))
+            }
+            None => (Source::Live(live_source(&cfg)), None),
         };
-        let capture = if cfg.capture_audio {
+        let simulator = matches!(source, Source::Sim(_));
+        let capture = if cfg.capture_audio && !simulator {
             match LoopbackCapture::start(cfg.audio_device.as_deref()) {
-                Ok((cap, rx, rate)) => Some((cap, rx, Analyzer::new(rate))),
+                Ok((cap, rx, rate)) => Some(Capture {
+                    _stream: cap,
+                    rx,
+                    analyzer: Analyzer::new(rate),
+                }),
                 Err(e) => {
                     tracing::warn!("loopback capture unavailable: {e:#}");
                     None
@@ -165,15 +271,27 @@ impl Engine {
         let thread = std::thread::Builder::new()
             .name("onset-engine".into())
             .spawn(move || {
-                run(
-                    &cfg, &paths, &library, initial, capture, &rx, &state_w, &status_w,
-                );
+                let mut engine = Running {
+                    cfg,
+                    paths,
+                    library,
+                    source,
+                    current,
+                    capture,
+                    clock: Clock::new(),
+                    director: Director::new(),
+                    started: Instant::now(),
+                    last_tick: Instant::now(),
+                    last_status: None,
+                };
+                engine.run(&rx, &state_w, &status_w);
             })?;
         Ok(Self {
             state,
             status,
             commands: tx,
             tracks,
+            simulator,
             _thread: thread,
         })
     }
@@ -192,115 +310,219 @@ impl Engine {
         &self.tracks
     }
 
+    /// True when the developer simulator is the source (transport controls apply).
+    pub fn is_simulator(&self) -> bool {
+        self.simulator
+    }
+
     pub fn command(&self, cmd: EngineCommand) {
         let _ = self.commands.send(cmd);
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-fn run(
-    cfg: &EngineConfig,
-    paths: &RekordboxPaths,
-    library: &Library,
-    mut loaded: Option<Loaded>,
-    mut capture: Option<(
-        LoopbackCapture,
-        crossbeam_channel::Receiver<Vec<f32>>,
-        Analyzer,
-    )>,
-    rx: &crossbeam_channel::Receiver<EngineCommand>,
-    state: &ArcSwap<MusicState>,
-    status: &ArcSwap<EngineStatus>,
-) {
-    let started = Instant::now();
-    let mut clock = Clock::new();
-    let mut director = Director::new();
-    let mut last_tick = started;
+#[cfg(windows)]
+fn live_source(cfg: &EngineConfig) -> Box<dyn TransportSource> {
+    Box::new(onset_transport::memory::reader::MemoryTransport::new(
+        cfg.offsets_dir.clone(),
+    ))
+}
 
-    let publish_status = |loaded: &Option<Loaded>| {
-        let s = match loaded {
-            Some(l) => EngineStatus::Running {
-                source: l.player.name().to_string(),
-                track: format!("{} - {}", l.meta.artist, l.meta.title),
+#[cfg(not(windows))]
+fn live_source(_cfg: &EngineConfig) -> Box<dyn TransportSource> {
+    struct Never;
+    impl TransportSource for Never {
+        fn name(&self) -> &'static str {
+            "rekordbox"
+        }
+        fn status(&self) -> SourceStatus {
+            SourceStatus::Unsupported("rekordbox memory reading needs Windows".into())
+        }
+        fn poll(&mut self) -> Option<TransportSnapshot> {
+            None
+        }
+    }
+    Box::new(Never)
+}
+
+/// State owned by the engine thread.
+struct Running {
+    cfg: EngineConfig,
+    paths: RekordboxPaths,
+    library: Library,
+    source: Source,
+    current: Option<Current>,
+    capture: Option<Capture>,
+    clock: Clock,
+    director: Director,
+    started: Instant,
+    last_tick: Instant,
+    last_status: Option<EngineStatus>,
+}
+
+impl Running {
+    fn status_now(&self) -> EngineStatus {
+        match (self.source.status(), &self.current) {
+            (SourceStatus::Searching, _) => EngineStatus::Waiting("waiting for rekordbox".into()),
+            (SourceStatus::Unsupported(why) | SourceStatus::Error(why), _) => {
+                EngineStatus::Waiting(why)
+            }
+            (SourceStatus::Connected, Some(c)) => EngineStatus::Running {
+                source: self.source.name().to_string(),
+                track: format!("{} - {}", c.meta.artist, c.meta.title),
             },
-            None => EngineStatus::Idle,
-        };
-        status.store(Arc::new(s));
-    };
-    publish_status(&loaded);
+            (SourceStatus::Connected, None) => EngineStatus::Idle,
+        }
+    }
 
-    loop {
-        while let Ok(cmd) = rx.try_recv() {
-            match (&cmd, loaded.as_mut()) {
-                (EngineCommand::Pause, Some(l)) => l.player.pause(true),
-                (EngineCommand::Resume, Some(l)) => l.player.pause(false),
-                (EngineCommand::Seek(s), Some(l)) => l.player.seek(*s),
-                (EngineCommand::SetRate(r), Some(l)) => l.player.set_rate(*r),
-                (EngineCommand::LoadTrack(title), _) => {
-                    match load_track(library, paths, title, cfg) {
-                        Ok(l) => {
-                            loaded = Some(l);
-                            clock = Clock::new();
-                            publish_status(&loaded);
-                        }
-                        Err(e) => {
-                            tracing::error!("load failed: {e:#}");
-                            status.store(Arc::new(EngineStatus::Error(format!("{e:#}"))));
-                        }
+    fn publish_status(&mut self, status: &ArcSwap<EngineStatus>) {
+        let s = self.status_now();
+        if self.last_status.as_ref() != Some(&s) {
+            tracing::info!(status = %s.line(), "engine");
+            status.store(Arc::new(s.clone()));
+            self.last_status = Some(s);
+        }
+    }
+
+    fn handle(&mut self, cmd: &EngineCommand, status: &ArcSwap<EngineStatus>) {
+        match (cmd, &mut self.source) {
+            (EngineCommand::Pause, Source::Sim(s)) => s.player.pause(true),
+            (EngineCommand::Resume, Source::Sim(s)) => s.player.pause(false),
+            (EngineCommand::Seek(t), Source::Sim(s)) => s.player.seek(*t),
+            (EngineCommand::SetRate(r), Source::Sim(s)) => s.player.set_rate(*r),
+            (EngineCommand::LoadTrack(title), Source::Sim(_)) => {
+                match start_sim(&self.library, &self.paths, title, &self.cfg) {
+                    Ok((sim, current)) => {
+                        self.source = Source::Sim(Box::new(sim));
+                        self.current = Some(current);
+                        self.clock = Clock::new();
+                    }
+                    Err(e) => {
+                        tracing::error!("load failed: {e:#}");
+                        status.store(Arc::new(EngineStatus::Error(format!("{e:#}"))));
+                        self.last_status = None;
                     }
                 }
-                _ => {}
+            }
+            (_, Source::Live(_)) => {
+                tracing::debug!(?cmd, "transport command ignored: rekordbox is in control");
             }
         }
+    }
 
-        let now = Instant::now();
-        let dt = now.duration_since(last_tick).as_secs_f32();
-        last_tick = now;
-        let time_s = started.elapsed().as_secs_f64();
+    /// A live snapshot names a track; keep `current` in step with it.
+    fn follow_track(&mut self, snapshot: &TransportSnapshot) {
+        let same = self
+            .current
+            .as_ref()
+            .is_some_and(|c| c.track_ref == snapshot.track);
+        if same || snapshot.track == TrackRef::Unknown {
+            return;
+        }
+        if let Some(meta) = resolve_track(&self.library, &snapshot.track) {
+            tracing::info!(title = %meta.title, artist = %meta.artist, "master deck track");
+            self.current = Some(load_current(
+                &self.library,
+                &self.paths,
+                meta,
+                snapshot.track.clone(),
+            ));
+            self.clock = Clock::new();
+            return;
+        }
+        tracing::warn!(track = ?snapshot.track, "master deck track not in the library");
+        if self.current.is_some() {
+            self.current = None;
+            self.clock = Clock::new();
+        }
+    }
 
-        let ms = if let Some(l) = loaded.as_mut() {
-            if let Some(snapshot) = l.player.poll() {
-                clock.observe(&snapshot);
+    fn audio(&mut self, now: Instant) -> AudioFeatures {
+        if let Some(cap) = self.capture.as_mut() {
+            while let Ok(block) = cap.rx.try_recv() {
+                cap.analyzer.push(&block);
             }
-            let playhead = clock.playhead_at(now).unwrap_or(0.0);
-            let structure = Structure::new(&l.analysis.grid, l.analysis.phrases.as_ref(), &l.cues);
-            let st = structure.at(playhead * 1000.0);
-            let intensity = director.update(&st, dt);
+            return cap.analyzer.latest(now);
+        }
+        if let Source::Sim(s) = &mut self.source {
+            while let Ok(block) = s.tap.try_recv() {
+                s.analyzer.push_at(&block, now);
+            }
+            return s.analyzer.latest(now);
+        }
+        AudioFeatures::silent()
+    }
 
-            let audio = if let Some((_, rx, an)) = capture.as_mut() {
-                while let Ok(block) = rx.try_recv() {
-                    an.push(&block);
-                }
-                an.latest(now)
-            } else {
-                while let Ok(block) = l.tap.try_recv() {
-                    l.analyzer.push_at(&block, now);
-                }
-                l.analyzer.latest(now)
-            };
+    fn tick(&mut self) -> MusicState {
+        let now = Instant::now();
+        let dt = now.duration_since(self.last_tick).as_secs_f32();
+        self.last_tick = now;
+        let time_s = self.started.elapsed().as_secs_f64();
 
-            MusicState::assemble(
-                time_s,
-                playhead,
-                clock.is_playing(),
-                clock.rate(),
-                &st,
-                audio,
-                intensity,
-                Some(l.meta.clone()),
-            )
-        } else {
-            MusicState {
+        if let Some(mut snapshot) = self.source.poll() {
+            if matches!(self.source, Source::Live(_)) {
+                self.follow_track(&snapshot);
+                // Memory reads carry the playing tempo only; the analysed tempo is ours.
+                if let Some(bpm) = self.current.as_ref().and_then(|c| c.meta.bpm)
+                    && bpm > 0.0
+                {
+                    snapshot.bpm_original = bpm;
+                }
+            }
+            self.clock.observe(&snapshot);
+        }
+
+        let Some(current) = self.current.as_ref() else {
+            return MusicState {
                 time_s,
                 ..MusicState::default()
-            }
+            };
         };
-        state.store(Arc::new(ms));
+        let playhead = self.clock.playhead_at(now).unwrap_or(0.0);
+        let meta = current.meta.clone();
+        let st = match &current.analysis {
+            Some(a) => {
+                Structure::new(&a.grid, a.phrases.as_ref(), &current.cues).at(playhead * 1000.0)
+            }
+            None => onset_core::structure::StructureState {
+                bpm: meta.bpm.unwrap_or(0.0),
+                ..Default::default()
+            },
+        };
+        let intensity = self.director.update(&st, dt);
+        let audio = self.audio(now);
+        MusicState::assemble(
+            time_s,
+            playhead,
+            self.clock.is_playing(),
+            self.clock.rate(),
+            &st,
+            audio,
+            intensity,
+            Some(meta),
+        )
+    }
 
-        // Sleep the remainder of the tick; the renderer reads whatever is newest.
-        let spent = Instant::now().duration_since(now);
-        if spent < TICK {
-            std::thread::sleep(TICK.saturating_sub(spent));
+    fn run(
+        &mut self,
+        rx: &crossbeam_channel::Receiver<EngineCommand>,
+        state: &ArcSwap<MusicState>,
+        status: &ArcSwap<EngineStatus>,
+    ) {
+        self.publish_status(status);
+        loop {
+            while let Ok(cmd) = rx.try_recv() {
+                self.handle(&cmd, status);
+            }
+            let tick_started = Instant::now();
+            let ms = self.tick();
+            state.store(Arc::new(ms));
+            self.publish_status(status);
+
+            // Sleep the remainder of the tick; the renderer reads whatever is newest.
+            let spent = tick_started.elapsed();
+            if spent < TICK {
+                std::thread::sleep(TICK.saturating_sub(spent));
+            }
         }
     }
 }
@@ -308,7 +530,7 @@ fn run(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
     use std::time::Duration;
 
     #[test]
@@ -317,12 +539,30 @@ mod tests {
         assert_eq!(track_label("  ", "HORN"), "HORN");
     }
 
+    #[test]
+    fn status_lines_say_what_is_missing() {
+        assert_eq!(
+            EngineStatus::Waiting("waiting for rekordbox".into()).line(),
+            "waiting for rekordbox"
+        );
+        assert_eq!(
+            EngineStatus::Running {
+                source: "rekordbox".into(),
+                track: "A - B".into()
+            }
+            .line(),
+            "rekordbox: A - B"
+        );
+    }
+
+    fn fixture_root() -> Option<PathBuf> {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/private");
+        root.join("master.db").exists().then_some(root)
+    }
+
     /// The private fixtures, when present together with the audio file of the demo track.
     fn fixtures() -> Option<PathBuf> {
-        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/private");
-        if !root.join("master.db").exists() {
-            return None;
-        }
+        let root = fixture_root()?;
         let paths = RekordboxPaths::from_app_dir(&root).ok()?;
         let cache = tempfile::tempdir().ok()?;
         let library = Library::open(&paths, cache.path()).ok()?;
@@ -333,6 +573,64 @@ mod tests {
             .then_some(root)
     }
 
+    fn config(app_dir: PathBuf, cache: &Path, sim_track: Option<&str>) -> EngineConfig {
+        EngineConfig {
+            app_dir: Some(app_dir),
+            cache_dir: cache.to_path_buf(),
+            offsets_dir: cache.join("no-offsets-here"),
+            sim_track: sim_track.map(str::to_string),
+            sim_seek_s: 30.0,
+            sim_gain: 0.0,
+            audio_device: None,
+            capture_audio: false,
+        }
+    }
+
+    #[test]
+    fn without_a_simulator_the_engine_waits_for_rekordbox_and_plays_nothing() {
+        let Some(app_dir) = fixture_root() else {
+            eprintln!("skipping: fixtures missing");
+            return;
+        };
+        let cache = tempfile::tempdir().unwrap();
+        let engine = Engine::start(config(app_dir, cache.path(), None)).expect("engine");
+        assert!(!engine.is_simulator());
+        std::thread::sleep(Duration::from_millis(400));
+        match engine.status() {
+            EngineStatus::Waiting(why) => assert!(
+                why.contains("rekordbox"),
+                "the reason names rekordbox: {why}"
+            ),
+            other => panic!("expected Waiting, got {other:?}"),
+        }
+        let s = engine.state();
+        assert!(!s.playing && s.track.is_none(), "nothing plays on its own");
+    }
+
+    #[test]
+    fn resolve_track_by_analysis_path_and_by_title() {
+        let Some(app_dir) = fixture_root() else {
+            eprintln!("skipping: fixtures missing");
+            return;
+        };
+        let paths = RekordboxPaths::from_app_dir(&app_dir).unwrap();
+        let cache = tempfile::tempdir().unwrap();
+        let library = Library::open(&paths, cache.path()).unwrap();
+        let by_title = resolve_track(
+            &library,
+            &TrackRef::TitleArtist {
+                title: "Move".into(),
+                artist: "Adam Port".into(),
+                album: String::new(),
+            },
+        )
+        .expect("title match");
+        let rel = by_title.analysis_path.clone().expect("analysis path");
+        let by_path = resolve_track(&library, &TrackRef::AnalysisPath(rel)).expect("path match");
+        assert_eq!(by_path.id, by_title.id);
+        assert!(resolve_track(&library, &TrackRef::Unknown).is_none());
+    }
+
     #[test]
     fn simulator_engine_publishes_live_state() {
         let Some(app_dir) = fixtures() else {
@@ -340,18 +638,11 @@ mod tests {
             return;
         };
         let cache = tempfile::tempdir().unwrap();
-        let Ok(engine) = Engine::start(EngineConfig {
-            app_dir: Some(app_dir),
-            cache_dir: cache.path().to_path_buf(),
-            sim_track: Some("Move".into()),
-            sim_seek_s: 30.0,
-            sim_gain: 0.0,
-            audio_device: None,
-            capture_audio: false,
-        }) else {
+        let Ok(engine) = Engine::start(config(app_dir, cache.path(), Some("Move"))) else {
             eprintln!("skipping: no audio device");
             return;
         };
+        assert!(engine.is_simulator());
         std::thread::sleep(Duration::from_millis(600));
         let a = engine.state();
         assert!(a.playing, "{a:?}");

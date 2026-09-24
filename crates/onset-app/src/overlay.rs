@@ -34,6 +34,8 @@ pub struct OverlayView<'a> {
     pub active_scene: &'a str,
     pub tracks: &'a [TrackEntry],
     pub status: &'a EngineStatus,
+    /// The developer simulator is the source, so transport controls apply.
+    pub simulator: bool,
     pub playhead_s: f64,
     pub duration_s: Option<f32>,
     pub playing: bool,
@@ -105,12 +107,7 @@ fn monitor_label(monitors: &[String], choice: &MonitorChoice) -> String {
 }
 
 fn status_text(status: &EngineStatus) -> String {
-    match status {
-        EngineStatus::Starting => "starting".to_string(),
-        EngineStatus::Idle => "idle (no track loaded)".to_string(),
-        EngineStatus::Running { source, track } => format!("{source}: {track}"),
-        EngineStatus::Error(e) => format!("error: {e}"),
-    }
+    status.line()
 }
 
 impl Overlay {
@@ -271,6 +268,12 @@ impl Overlay {
         edits: &mut Edits,
     ) {
         ui.label(status_text(view.status));
+        if !view.simulator {
+            ui.small(
+                "rekordbox drives playback. Start with --sim <title> for the developer simulator.",
+            );
+            return;
+        }
         ui.horizontal(|ui| {
             if ui
                 .button(if view.playing { "Pause" } else { "Play" })
@@ -484,6 +487,6 @@ mod tests {
             track: "Adam Port - Move".into(),
         };
         assert_eq!(status_text(&s), "sim: Adam Port - Move");
-        assert!(status_text(&EngineStatus::Idle).starts_with("idle"));
+        assert!(status_text(&EngineStatus::Idle).contains("no track"));
     }
 }
