@@ -4,3 +4,5 @@
 
 pub mod grid;
 pub mod phrase;
+pub mod structure;
+pub mod track;
