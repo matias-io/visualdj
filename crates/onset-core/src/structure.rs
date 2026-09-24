@@ -150,7 +150,7 @@ mod tests {
         let st = s.at(1250.0);
         assert_eq!(st.beat_index, Some(2));
         assert!((st.beat_phase - 0.5).abs() < 1e-6);
-        assert_eq!(st.bpm, 120.0);
+        assert!((st.bpm - 120.0).abs() < f32::EPSILON);
         assert_eq!(st.phrase, None);
         assert_eq!(st.drop_countdown_beats, None);
     }
@@ -187,6 +187,6 @@ mod tests {
         }]);
         let st = Structure::new(&g, None, &[]).at(100.0);
         assert_eq!(st.beat_index, None);
-        assert_eq!(st.bpm, 0.0);
+        assert!(st.bpm.abs() < f32::EPSILON);
     }
 }
