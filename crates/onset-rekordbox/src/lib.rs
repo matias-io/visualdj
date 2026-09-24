@@ -2,5 +2,7 @@
 //! the collection model built from it, and the ANLZ analysis files (beat grid, phrases, cues).
 #![forbid(unsafe_code)]
 
+pub mod cache;
+pub mod library;
 pub mod paths;
 pub mod sqlcipher;
