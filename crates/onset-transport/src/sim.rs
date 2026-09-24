@@ -65,7 +65,7 @@ impl SimPlayer {
         // Playback advances through the file at rate × (file Hz / device Hz) frames per
         // output frame, which resamples by linear interpolation.
         let rate_ratio = f64::from(decoded.sample_rate) / f64::from(device_rate);
-        let (d, pos, rate, gain, pz) = (
+        let (audio, shared_pos, shared_rate, shared_gain, shared_paused) = (
             decoded.clone(),
             pos_milli.clone(),
             rate_milli.clone(),
@@ -76,22 +76,22 @@ impl SimPlayer {
         let stream = device.build_output_stream(
             config,
             move |out: &mut [f32], _| {
-                let step = rate.load(Ordering::Relaxed) as f64 / POS_SCALE * rate_ratio;
-                let g = f32::from_bits(gain.load(Ordering::Relaxed));
-                let is_paused = pz.load(Ordering::Relaxed);
-                let mut p = pos.load(Ordering::Relaxed) as f64 / POS_SCALE;
+                let step = shared_rate.load(Ordering::Relaxed) as f64 / POS_SCALE * rate_ratio;
+                let g = f32::from_bits(shared_gain.load(Ordering::Relaxed));
+                let is_paused = shared_paused.load(Ordering::Relaxed);
+                let mut p = shared_pos.load(Ordering::Relaxed) as f64 / POS_SCALE;
                 for frame in out.chunks_mut(out_channels) {
                     let (l, r) = if is_paused {
                         (0.0, 0.0)
                     } else {
-                        let s = sample_at(&d, p);
+                        let s = sample_at(&audio, p);
                         p += step;
                         s
                     };
                     for (c, slot) in frame.iter_mut().enumerate() {
                         *slot = if c % 2 == 0 { l } else { r } * g;
                     }
-                    mono_block.push(0.5 * (l + r));
+                    mono_block.push(f32::midpoint(l, r));
                     if mono_block.len() == TAP_BLOCK {
                         let _ = audio_tx.try_send(std::mem::replace(
                             &mut mono_block,
@@ -100,7 +100,7 @@ impl SimPlayer {
                     }
                 }
                 if !is_paused {
-                    pos.store((p * POS_SCALE) as u64, Ordering::Relaxed);
+                    shared_pos.store((p * POS_SCALE) as u64, Ordering::Relaxed);
                 }
             },
             |e| tracing::error!("sim output stream error: {e}"),

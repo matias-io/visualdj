@@ -1023,6 +1023,7 @@ version = "0.0.1"
 dependencies = [
  "anyhow",
  "clap",
+ "crossbeam-channel",
  "directories",
  "onset-audio",
  "onset-core",

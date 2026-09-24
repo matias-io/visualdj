@@ -7,7 +7,7 @@ use symphonia::core::codecs::audio::AudioDecoderOptions;
 use symphonia::core::errors::Error;
 use symphonia::core::formats::probe::Hint;
 use symphonia::core::formats::{FormatOptions, TrackType};
-use symphonia::core::io::MediaSourceStream;
+use symphonia::core::io::{MediaSourceStream, MediaSourceStreamOptions};
 use symphonia::core::meta::MetadataOptions;
 
 pub struct DecodedAudio {
@@ -29,7 +29,7 @@ impl DecodedAudio {
 
 pub fn decode_file(path: &Path) -> anyhow::Result<DecodedAudio> {
     let file = Box::new(File::open(path)?);
-    let mss = MediaSourceStream::new(file, Default::default());
+    let mss = MediaSourceStream::new(file, MediaSourceStreamOptions::default());
     let mut hint = Hint::new();
     if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
         hint.with_extension(ext);
