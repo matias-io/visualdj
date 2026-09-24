@@ -1,5 +1,7 @@
 //! Developer tools: inspect the rekordbox library, play a track through the simulator,
 //! listen to the loopback capture. Nothing here ships to end users.
+#[cfg(windows)]
+mod calibrate;
 mod common;
 mod library_cmds;
 mod live;
@@ -107,6 +109,16 @@ enum Command {
         /// Chains such as "05C64808 2A0 10 1175 109A 0"
         chains: Vec<String>,
     },
+    /// Derive the pointer chains for the running rekordbox version (interactive) and write
+    /// offsets/<version>.toml
+    Calibrate {
+        /// Where to write the offsets file (default: `offsets/` or `ONSET_OFFSETS`)
+        #[arg(long)]
+        out_dir: Option<PathBuf>,
+        /// Title of the track already playing on deck 1 (skips the first question)
+        #[arg(long)]
+        title: Option<String>,
+    },
 }
 
 fn main() -> anyhow::Result<()> {
@@ -160,6 +172,12 @@ fn main() -> anyhow::Result<()> {
         Command::Memresolve { chains } => memscan::memresolve(&chains)?,
         #[cfg(not(windows))]
         Command::Memresolve { .. } => anyhow::bail!("memresolve needs Windows"),
+        #[cfg(windows)]
+        Command::Calibrate { out_dir, title } => {
+            calibrate::calibrate(&out_dir.unwrap_or_else(calibrate::default_out_dir), title)?;
+        }
+        #[cfg(not(windows))]
+        Command::Calibrate { .. } => anyhow::bail!("calibrate needs Windows"),
     }
     Ok(())
 }

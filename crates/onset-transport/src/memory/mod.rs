@@ -6,6 +6,7 @@
 #[cfg(windows)]
 pub mod process;
 
+pub mod calibrate;
 pub mod chain;
 pub mod offsets;
 pub mod reader;
