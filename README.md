@@ -46,18 +46,26 @@ What works, verified against a real rekordbox 7.2.18 library on an RTX 3050 Ti l
 | --- | --- | --- |
 | ![](docs/img/scene-pulse.png) | ![](docs/img/scene-warp.png) | ![](docs/img/scene-voronoi.png) |
 
-## Run it
+## Build and run
 
-Build once, then start the output window with the simulator playing a title from your
-rekordbox collection:
+Build the release binary once (about five minutes the first time, a minute after that):
 
 ```bash
 cargo build --release
 ```
 
+The binary is `targetelease\onset.exe` (`target/release/onset` in a Unix shell). It is a
+single file; keep the `assets\` folder next to it or run it from the repository root, and it
+also carries built-in copies of the shaders and fonts so it starts without them.
+
+Start the output window with the simulator playing a title from your rekordbox collection:
+
 ```bash
-./target/release/onset --monitor 1 --sim "Move" --scene ring
+targetelease\onset.exe --monitor 1 --sim "Move" --scene ring
 ```
+
+A debug build (`cargo build`, binary at `target\debug\onset.exe`) starts faster to compile but
+renders several times slower; use it for shader work, not for a show.
 
 `--monitor` takes a zero-based index or part of the monitor's name; without it the config
 decides, and the primary monitor is the fallback. `--app-dir` points at a rekordbox data
