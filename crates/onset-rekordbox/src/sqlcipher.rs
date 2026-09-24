@@ -86,25 +86,44 @@ fn be_u32(b: &[u8]) -> u32 {
     u32::from_be_bytes([b[0], b[1], b[2], b[3]])
 }
 
+/// Decrypts every page of the main file; fails on the first HMAC mismatch.
+fn decrypt_all_pages(keys: &Keys, bytes: &[u8]) -> Result<Vec<Vec<u8>>, SqlcipherError> {
+    // `chunks_exact` (not the nightly-only `as_chunks`) keeps this on stable Rust.
+    #[allow(clippy::chunks_exact_to_as_chunks)]
+    bytes
+        .chunks_exact(PAGE_SIZE)
+        .enumerate()
+        .map(|(i, p)| decrypt_page(keys, u32::try_from(i + 1).expect("page count"), p))
+        .collect()
+}
+
 pub fn decrypt_database(
     db: &Path,
     wal: Option<&Path>,
     passphrase: &str,
     out: &Path,
 ) -> Result<DecryptStats, SqlcipherError> {
-    let bytes = fs::read(db)?;
-    if bytes.len() < PAGE_SIZE || bytes.len() % PAGE_SIZE != 0 {
-        return Err(SqlcipherError::BadSize(bytes.len()));
-    }
-    let keys = derive_keys(passphrase, &bytes[..SALT_LEN]);
-
-    // `chunks_exact` (not the nightly-only `as_chunks`) keeps this on stable Rust.
-    #[allow(clippy::chunks_exact_to_as_chunks)]
-    let mut pages: Vec<Vec<u8>> = bytes
-        .chunks_exact(PAGE_SIZE)
-        .enumerate()
-        .map(|(i, p)| decrypt_page(&keys, u32::try_from(i + 1).expect("page count"), p))
-        .collect::<Result<_, _>>()?;
+    // rekordbox may checkpoint while we read; a torn page past the first shows up as an HMAC
+    // failure. Re-read a few times before giving up. Page 1 failing means the wrong key.
+    let (keys, mut pages) = {
+        let mut attempt = 0;
+        loop {
+            let bytes = fs::read(db)?;
+            if bytes.len() < PAGE_SIZE || bytes.len() % PAGE_SIZE != 0 {
+                return Err(SqlcipherError::BadSize(bytes.len()));
+            }
+            let keys = derive_keys(passphrase, &bytes[..SALT_LEN]);
+            match decrypt_all_pages(&keys, &bytes) {
+                Ok(pages) => break (keys, pages),
+                Err(SqlcipherError::HmacMismatch { page }) if page > 1 && attempt < 3 => {
+                    attempt += 1;
+                    tracing::warn!(page, attempt, "torn page while reading master.db; retrying");
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                }
+                Err(e) => return Err(e),
+            }
+        }
+    };
 
     let mut applied = 0u32;
     if let Some(wal_path) = wal.filter(|p| p.is_file()) {
@@ -130,7 +149,16 @@ pub fn decrypt_database(
                 }
                 let page_no = be_u32(&fh[0..4]);
                 let commit_size = be_u32(&fh[4..8]);
-                let page = decrypt_page(&keys, page_no, &w[off + 24..off + frame_len])?;
+                // SQLite writes a frame header and its page separately; a header with good
+                // salts over stale bytes is a torn frame. Like SQLite, treat it as end-of-log.
+                let page = match decrypt_page(&keys, page_no, &w[off + 24..off + frame_len]) {
+                    Ok(page) => page,
+                    Err(SqlcipherError::HmacMismatch { .. }) => {
+                        tracing::warn!(frame_offset = off, "torn WAL frame; ending log here");
+                        break;
+                    }
+                    Err(e) => return Err(e),
+                };
                 pending.push((page_no, page));
                 if commit_size != 0 {
                     committed.append(&mut pending);

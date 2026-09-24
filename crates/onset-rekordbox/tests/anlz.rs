@@ -75,4 +75,6 @@ fn every_analysed_track_parses() {
     );
     assert!(failed.is_empty(), "{failed:#?}");
     assert!(ok > 150, "parsed only {ok}");
+    // The no-phrase input class must stay represented in the fixtures (15 tracks today).
+    assert!(no_phrases > 0, "expected some tracks without PSSI");
 }
