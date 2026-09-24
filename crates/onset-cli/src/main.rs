@@ -30,6 +30,71 @@ enum Command {
         #[arg(long)]
         grep: Option<String>,
     },
+    /// Show a track's beat grid summary, phrases and cues
+    Anlz {
+        #[arg(long)]
+        app_dir: Option<PathBuf>,
+        /// Track title (case-insensitive exact match)
+        title: String,
+    },
+}
+
+fn cmd_anlz(app_dir: Option<PathBuf>, title: &str) -> anyhow::Result<()> {
+    let paths = resolve_paths(app_dir)?;
+    let lib = onset_rekordbox::library::Library::open(&paths, &cache_dir()?)?;
+    let track = lib
+        .find_by_title_artist(title, "")
+        .ok_or_else(|| anyhow::anyhow!("no track titled {title:?}"))?;
+    let rel = track
+        .analysis_path
+        .as_deref()
+        .ok_or_else(|| anyhow::anyhow!("{title:?} has no analysis file"))?;
+    let a = onset_rekordbox::anlz::load_analysis(&paths, rel)?;
+
+    println!("{} - {}", track.artist, track.title);
+    println!(
+        "beats: {}   bpm@60s: {:?}   first beat at {:?} ms",
+        a.grid.len(),
+        a.grid.bpm_at(60_000.0),
+        a.grid.beats().first().map(|b| b.time_ms)
+    );
+    match &a.phrases {
+        Some(pm) => {
+            println!(
+                "phrases ({:?} mood, ends at beat {}):",
+                pm.mood, pm.end_beat
+            );
+            for p in &pm.phrases {
+                let start_ms = a
+                    .grid
+                    .time_of(usize::try_from(p.start_beat.saturating_sub(1)).unwrap_or(0))
+                    .unwrap_or(0.0);
+                println!(
+                    "  {:>5}-{:<5} {:>7.1}s  {:<10} {:?}",
+                    p.start_beat,
+                    p.end_beat,
+                    start_ms / 1000.0,
+                    p.label,
+                    p.kind
+                );
+            }
+        }
+        None => println!("phrases: none (no PSSI section)"),
+    }
+    println!("cues:");
+    for c in &a.cues {
+        let slot = if c.slot == 0 {
+            "mem".to_string()
+        } else {
+            char::from(b'A' + c.slot - 1).to_string()
+        };
+        println!(
+            "  {:>7.1}s  {slot:<3} {}",
+            f64::from(c.time_ms) / 1000.0,
+            c.name
+        );
+    }
+    Ok(())
 }
 
 fn cmd_library(app_dir: Option<PathBuf>, grep: Option<String>) -> anyhow::Result<()> {
@@ -103,6 +168,7 @@ fn main() -> anyhow::Result<()> {
         Command::Version => println!("onset {}", env!("CARGO_PKG_VERSION")),
         Command::Schema { app_dir } => cmd_schema(app_dir)?,
         Command::Library { app_dir, grep } => cmd_library(app_dir, grep)?,
+        Command::Anlz { app_dir, title } => cmd_anlz(app_dir, &title)?,
     }
     Ok(())
 }
