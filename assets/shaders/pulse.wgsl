@@ -9,9 +9,11 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     let accent = theme(2u);
     let accent2 = theme(3u);
 
-    // Beat breath: quick flash that decays over the beat, scaled by intensity.
+    // Beat breath: quick flash that decays over the beat, scaled by intensity. A vignette
+    // keeps the frame from being one flat colour when nothing is playing.
     let pulse = beat_pulse(frame.beat_phase, 3.0) * (0.15 + 0.35 * frame.intensity);
-    var col = bg + accent * pulse * 0.6;
+    let vignette = 1.0 - smoothstep(0.1, 1.5, length(p));
+    var col = bg * (0.5 + 0.9 * vignette) + accent * pulse * 0.6;
 
     // Bar progress along the bottom edge.
     if (in.uv.y > 0.97 && in.uv.x < frame.bar_phase) {

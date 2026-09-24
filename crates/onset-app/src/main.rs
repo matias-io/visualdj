@@ -36,6 +36,9 @@ struct Cli {
     /// Simulator output gain 0..1
     #[arg(long, default_value_t = 0.5)]
     gain: f32,
+    /// Start on this scene (overrides the config)
+    #[arg(long)]
+    scene: Option<String>,
     /// Close after this many seconds (for unattended checks)
     #[arg(long)]
     exit_after: Option<f64>,
@@ -70,7 +73,10 @@ fn main() -> anyhow::Result<()> {
         println!("{}", Config::path().display());
         return Ok(());
     }
-    let config = Config::load();
+    let mut config = Config::load();
+    if let Some(scene) = &cli.scene {
+        config.scene.clone_from(scene);
+    }
 
     let sim_track = cli.sim.clone().or_else(|| config.sim_track.clone());
     let engine = match Engine::start(EngineConfig {

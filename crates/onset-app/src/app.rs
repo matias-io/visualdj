@@ -7,7 +7,7 @@ use onset_core::music_state::MusicState;
 use onset_render::assets::shader_dir;
 use onset_render::gpu::Gpu;
 use onset_render::renderer::Renderer;
-use onset_render::scene::FullscreenScene;
+use onset_render::scenes::builtin_scenes;
 use winit::application::ApplicationHandler;
 use winit::dpi::PhysicalSize;
 use winit::event::{ElementState, KeyEvent, WindowEvent};
@@ -19,9 +19,6 @@ use winit::window::{Fullscreen, Window, WindowAttributes, WindowId, WindowLevel}
 use crate::config::{Config, MonitorChoice, PresentModeChoice};
 use crate::engine::{Engine, EngineCommand};
 use crate::monitors::{MonitorInfo, choose};
-
-/// Scene shader files shipped in `assets/shaders/`, in menu order.
-pub const BUILTIN_SCENES: &[&str] = &["pulse"];
 
 pub struct AppOptions {
     pub config: Config,
@@ -67,20 +64,17 @@ fn monitor_infos(event_loop: &ActiveEventLoop) -> (Vec<MonitorHandle>, Vec<Monit
     (handles, infos)
 }
 
-/// Loads every built-in scene whose shader file exists; a broken file is logged and skipped.
+/// Loads the built-in scenes; a shader that fails to compile is reported and skipped so a
+/// broken file cannot take the whole output down.
 fn load_scenes(gpu: &Gpu, format: wgpu::TextureFormat, renderer: &mut Renderer) {
     let dir = shader_dir();
-    for name in BUILTIN_SCENES {
-        let path = dir.join(format!("{name}.wgsl"));
-        match std::fs::read_to_string(&path) {
-            Ok(src) => {
-                match FullscreenScene::new(gpu, name, &src, format, &renderer.bindings().layout) {
-                    Ok(scene) => renderer.add_scene(Box::new(scene)),
-                    Err(e) => tracing::error!("{e}"),
-                }
+    match builtin_scenes(gpu, format, &renderer.bindings().layout, &dir) {
+        Ok(scenes) => {
+            for scene in scenes {
+                renderer.add_scene(scene);
             }
-            Err(e) => tracing::error!(path = %path.display(), "cannot read scene shader: {e}"),
         }
+        Err(e) => tracing::error!("{e}"),
     }
     tracing::info!(scenes = ?renderer.scene_names(), dir = %dir.display(), "scenes loaded");
 }
