@@ -3,6 +3,7 @@
 #![forbid(unsafe_code)]
 
 pub mod clock;
+pub mod director;
 pub mod grid;
 pub mod phrase;
 pub mod structure;
