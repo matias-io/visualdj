@@ -5,14 +5,14 @@ on `onset-core`, nothing in `onset-core` depends on anything that does I/O.
 
 ```
 crates/
-  onset-core        domain model: tracks, beat grids, phrases, playhead clock, MusicState, director
-  onset-rekordbox   master.db (SQLCipher) reader, ANLZ analysis parsing, artwork paths
-  onset-transport   TransportSource trait and adapters: sim (built-in player), memory, osc
-  onset-audio       WASAPI loopback capture, 24-band analysis, onsets, silence detection
-  onset-enrich      lyrics (LRCLIB), artwork palette, on-disk cache            (planned)
-  onset-render      wgpu scenes, post FX, text, uniforms, hot reload            (planned)
-  onset-app         output window, egui control window, config, hotkeys        (planned)
-  onset-cli         developer commands
+  onset-core        domain model: tracks, beat grids, phrases, playhead clock, MusicState, director   (v0.0.1)
+  onset-rekordbox   master.db (SQLCipher) reader, ANLZ analysis parsing, artwork paths                (v0.0.1)
+  onset-transport   TransportSource trait; adapters: sim (v0.0.1), memory + calibrator, osc (planned)
+  onset-audio       WASAPI loopback capture, 24-band analysis, onsets, silence detection             (v0.0.1)
+  onset-enrich      lyrics (LRCLIB), artwork palette, on-disk cache                                  (planned)
+  onset-render      wgpu scenes, post FX, text, uniforms, hot reload                                  (planned)
+  onset-app         output window, egui control window, config, hotkeys                              (planned)
+  onset-cli         developer commands                                                               (v0.0.1)
 ```
 
 ## Data flow
