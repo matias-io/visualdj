@@ -1,0 +1,31 @@
+[package]
+name = "onset-rekordbox"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "Read-only access to rekordbox's local library: master.db, analysis files, artwork"
+
+[dependencies]
+onset-core.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+serde.workspace = true
+directories.workspace = true
+rusqlite.workspace = true
+aes.workspace = true
+cbc.workspace = true
+pbkdf2.workspace = true
+sha2.workspace = true
+hmac.workspace = true
+rekordcrate.workspace = true
+binrw.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

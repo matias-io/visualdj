@@ -1,0 +1,27 @@
+[package]
+name = "onset-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "Developer command line for exercising Onset's crates without the renderer"
+
+[[bin]]
+name = "onset-cli"
+path = "src/main.rs"
+
+[dependencies]
+onset-core.workspace = true
+onset-rekordbox.workspace = true
+onset-transport.workspace = true
+onset-audio.workspace = true
+anyhow.workspace = true
+clap.workspace = true
+directories.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[lints]
+workspace = true

@@ -1,0 +1,66 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.0.1"
+edition = "2024"
+rust-version = "1.98"
+license = "LicenseRef-TBD"
+repository = "https://github.com/matias-io/visualdj"
+authors = ["Matias Suxo"]
+
+[workspace.dependencies]
+onset-core = { path = "crates/onset-core" }
+onset-rekordbox = { path = "crates/onset-rekordbox" }
+onset-transport = { path = "crates/onset-transport" }
+onset-audio = { path = "crates/onset-audio" }
+
+anyhow = "1.0"
+thiserror = "2.0"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+toml = "1.1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+directories = "6.0"
+clap = { version = "4.6", features = ["derive"] }
+crossbeam-channel = "0.5"
+arc-swap = "1.9"
+parking_lot = "0.12"
+tempfile = "3"
+
+rusqlite = { version = "0.40", features = ["bundled"] }
+aes = "0.8"
+cbc = { version = "0.1", features = ["alloc"] }
+pbkdf2 = { version = "0.12", default-features = false, features = ["hmac"] }
+sha2 = "0.10"
+hmac = "0.12"
+rekordcrate = { git = "https://github.com/grufkork/rekordcrate.git", branch = "main", default-features = false }
+binrw = "0.14"
+image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
+notify = "8.2"
+
+symphonia = { version = "0.6", default-features = false, features = ["flac", "mp3", "wav", "pcm"] }
+cpal = "0.18"
+rustfft = "6.4"
+
+[workspace.lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+
+[workspace.lints.clippy]
+all = { level = "deny", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+module_name_repetitions = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+must_use_candidate = "allow"
+cast_precision_loss = "allow"
+cast_possible_truncation = "allow"
+cast_sign_loss = "allow"
+unnecessary_wraps = "allow"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1

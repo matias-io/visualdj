@@ -1,0 +1,28 @@
+# Build output
+/target/
+**/*.rs.bk
+*.pdb
+
+# Local-only documentation and agent context (kept out of the public repo for now)
+CLAUDE.md
+AGENTS.md
+docs/superpowers/
+docs/internal/
+
+# Private fixtures copied from a real rekordbox install (personal library data)
+fixtures/private/
+
+# Local configuration and caches
+*.local.toml
+/.cache/
+/.calibration/
+
+# Editors and OS
+.idea/
+.vs/
+*.swp
+Thumbs.db
+.DS_Store
+
+# Plan execution scratch (ledger, briefs)
+.superpowers/

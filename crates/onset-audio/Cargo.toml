@@ -1,0 +1,22 @@
+[package]
+name = "onset-audio"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "Live audio capture (WASAPI loopback) and spectral analysis for Onset"
+
+[dependencies]
+onset-core.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+crossbeam-channel.workspace = true
+parking_lot.workspace = true
+cpal.workspace = true
+rustfft.workspace = true
+
+[lints]
+workspace = true
