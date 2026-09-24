@@ -175,7 +175,10 @@ impl OnsetApp {
             "surface ready"
         );
 
-        let mut renderer = Renderer::new(&gpu, (config.width, config.height));
+        let mut renderer = Renderer::new(&gpu, (config.width, config.height), format);
+        renderer.set_scale(window.scale_factor() as f32);
+        renderer.set_show_card(self.opts.config.show_card);
+        renderer.set_show_hud(self.opts.config.show_hud);
         load_scenes(&gpu, format, &mut renderer);
         if !renderer.set_scene(&self.opts.config.scene) {
             tracing::info!(requested = %self.opts.config.scene, "scene not found, using the first");
@@ -299,10 +302,16 @@ impl OnsetApp {
             KeyCode::KeyF => self.toggle_fullscreen(),
             KeyCode::KeyH => {
                 self.opts.config.show_hud = !self.opts.config.show_hud;
+                if let Some(s) = self.surface.as_mut() {
+                    s.renderer.set_show_hud(self.opts.config.show_hud);
+                }
                 tracing::info!(hud = self.opts.config.show_hud, "toggle");
             }
             KeyCode::KeyC => {
                 self.opts.config.show_card = !self.opts.config.show_card;
+                if let Some(s) = self.surface.as_mut() {
+                    s.renderer.set_show_card(self.opts.config.show_card);
+                }
                 tracing::info!(card = self.opts.config.show_card, "toggle");
             }
             KeyCode::Space => {
@@ -369,8 +378,9 @@ impl ApplicationHandler for OnsetApp {
         match event {
             WindowEvent::CloseRequested => event_loop.exit(),
             WindowEvent::Resized(size) => self.resize(size),
-            WindowEvent::ScaleFactorChanged { .. } => {
-                if let Some(s) = &self.surface {
+            WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
+                if let Some(s) = self.surface.as_mut() {
+                    s.renderer.set_scale(scale_factor as f32);
                     let size = s.window.inner_size();
                     self.resize(size);
                 }

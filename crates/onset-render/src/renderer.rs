@@ -1,13 +1,16 @@
-//! Owns the frame bindings and the scene list; renders the active scene into a target.
+//! Owns the frame bindings and the scene list; renders the active scene into a target, then
+//! the overlays (Now Playing card, HUD) on top.
+use std::path::Path;
 use std::time::Instant;
 
 use onset_core::music_state::MusicState;
 
-use std::path::Path;
-
+use crate::card::{Card, CardFrame};
 use crate::gpu::Gpu;
 use crate::hot_reload::ShaderWatcher;
+use crate::hud::{Hud, HudInfo};
 use crate::scene::{FrameBindings, Scene, ShaderError};
+use crate::text::{TextItem, TextLayer};
 use crate::uniforms::FrameUniforms;
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -23,17 +26,52 @@ pub struct Renderer {
     size: (u32, u32),
     /// The most recent hot-reload failure, shown by the HUD until a good reload clears it.
     last_error: Option<String>,
+    text: TextLayer,
+    card: Card,
+    hud: Hud,
+    show_card: bool,
+    show_hud: bool,
+    /// Window DPI factor; the HUD scales with it, the card scales with the frame height.
+    scale: f32,
+    last_cpu_ms: f32,
 }
 
 impl Renderer {
-    pub fn new(gpu: &Gpu, size: (u32, u32)) -> Self {
+    pub fn new(gpu: &Gpu, size: (u32, u32), format: wgpu::TextureFormat) -> Self {
         Self {
             bindings: FrameBindings::new(gpu),
             scenes: Vec::new(),
             active: 0,
             size,
             last_error: None,
+            text: TextLayer::new(gpu, format),
+            card: Card::new(gpu, format),
+            hud: Hud::new(),
+            show_card: true,
+            show_hud: false,
+            scale: 1.0,
+            last_cpu_ms: 0.0,
         }
+    }
+
+    pub fn set_scale(&mut self, scale: f32) {
+        self.scale = scale.max(0.1);
+    }
+
+    pub fn set_show_card(&mut self, show: bool) {
+        self.show_card = show;
+    }
+
+    pub fn set_show_hud(&mut self, show: bool) {
+        self.show_hud = show;
+    }
+
+    pub fn show_hud(&self) -> bool {
+        self.show_hud
+    }
+
+    pub fn hud(&self) -> &Hud {
+        &self.hud
     }
 
     pub fn last_error(&self) -> Option<&str> {
@@ -149,7 +187,8 @@ impl Renderer {
         }
     }
 
-    /// Writes the uniforms for `ms` and renders the active scene into `target`.
+    /// Writes the uniforms for `ms`, renders the active scene into `target`, then the card
+    /// and HUD when enabled.
     pub fn render(
         &mut self,
         gpu: &Gpu,
@@ -159,13 +198,64 @@ impl Renderer {
         time_s: f32,
     ) -> FrameStats {
         let started = Instant::now();
+        self.hud.record(time_s, self.last_cpu_ms);
         self.bindings
             .write(gpu, &FrameUniforms::from_state(ms, self.size, time_s));
         if let Some(scene) = self.scenes.get_mut(self.active) {
             scene.render(gpu, encoder, target, &self.bindings);
         }
-        FrameStats {
-            cpu_ms: started.elapsed().as_secs_f32() * 1000.0,
+
+        let mut items: Vec<TextItem> = Vec::new();
+        self.card
+            .update(gpu, ms.track.as_ref().filter(|_| self.show_card), time_s);
+        if self.show_card {
+            items.extend(self.card.draw(
+                gpu,
+                encoder,
+                target,
+                &mut self.text,
+                CardFrame {
+                    size: self.size,
+                    theme: &ms.theme,
+                    live_bpm: ms.bpm,
+                    time_s,
+                },
+            ));
         }
+        if self.show_hud {
+            let info = HudInfo {
+                scene: self.active_scene().unwrap_or("-").to_string(),
+                size: self.size,
+                gpu_ms: None,
+                last_error: self.last_error.clone(),
+            };
+            items.extend(self.hud.items(ms, &info, self.scale));
+        }
+        if !items.is_empty() {
+            match self.text.prepare(gpu, self.size, &items) {
+                Ok(()) => {
+                    let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                        label: Some("text"),
+                        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                            view: target,
+                            depth_slice: None,
+                            resolve_target: None,
+                            ops: wgpu::Operations {
+                                load: wgpu::LoadOp::Load,
+                                store: wgpu::StoreOp::Store,
+                            },
+                        })],
+                        ..Default::default()
+                    });
+                    self.text.render(&mut pass);
+                }
+                Err(e) => tracing::warn!("text prepare: {e}"),
+            }
+        }
+        self.text.trim();
+
+        let cpu_ms = started.elapsed().as_secs_f32() * 1000.0;
+        self.last_cpu_ms = cpu_ms;
+        FrameStats { cpu_ms }
     }
 }
