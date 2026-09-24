@@ -6,6 +6,7 @@ pub mod audio_features;
 pub mod clock;
 pub mod director;
 pub mod grid;
+pub mod music_state;
 pub mod phrase;
 pub mod structure;
 pub mod track;
