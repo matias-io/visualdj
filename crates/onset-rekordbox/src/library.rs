@@ -42,7 +42,7 @@ impl Library {
         let mut stmt = conn.prepare(
             "SELECT c.ID, c.Title, IFNULL(a.Name, ''), IFNULL(al.Name, ''), c.ReleaseYear,
                     k.ScaleName, c.BPM, c.Length, c.FolderPath, c.ImagePath,
-                    c.AnalysisDataPath, c.ISRC
+                    c.AnalysisDataPath, c.ISRC, c.SampleRate
              FROM djmdContent c
              LEFT JOIN djmdArtist a ON a.ID = c.ArtistID
              LEFT JOIN djmdAlbum al ON al.ID = c.AlbumID
@@ -56,6 +56,7 @@ impl Library {
             let len: Option<i64> = r.get(7)?;
             let folder: Option<String> = r.get(8)?;
             let image: Option<String> = r.get(9)?;
+            let sample_rate: Option<i64> = r.get(12)?;
             Ok(TrackMeta {
                 id: TrackId(id.parse().unwrap_or(0)),
                 title: r.get::<_, Option<String>>(1)?.unwrap_or_default(),
@@ -65,6 +66,9 @@ impl Library {
                 key: r.get::<_, Option<String>>(5)?.filter(|k| !k.is_empty()),
                 bpm: bpm.filter(|b| *b > 0).map(|b| b as f32 / 100.0),
                 duration_s: len.filter(|l| *l > 0).map(|l| l as f32),
+                sample_rate: sample_rate
+                    .filter(|s| *s > 0)
+                    .and_then(|s| u32::try_from(s).ok()),
                 file_path: folder.filter(|f| !f.is_empty()).map(PathBuf::from),
                 artwork_path: image
                     .filter(|i| !i.is_empty())

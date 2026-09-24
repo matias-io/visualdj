@@ -350,6 +350,7 @@ mod tests {
             key: Some("11B".into()),
             bpm: Some(120.0),
             duration_s: None,
+            sample_rate: None,
             file_path: None,
             artwork_path: None,
             analysis_path: None,

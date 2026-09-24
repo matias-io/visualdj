@@ -420,6 +420,9 @@ impl Running {
         }
         if let Some(meta) = resolve_track(&self.library, &snapshot.track) {
             tracing::info!(title = %meta.title, artist = %meta.artist, "master deck track");
+            if let Source::Live(s) = &mut self.source {
+                s.set_track_sample_rate(meta.sample_rate);
+            }
             self.current = Some(load_current(
                 &self.library,
                 &self.paths,

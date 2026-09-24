@@ -35,7 +35,8 @@ pub struct Offsets {
     pub rekordbox_version: String,
     pub platform: String,
     pub position_format: PositionFormat,
-    /// Position units per second of track time (44100 for a sample count).
+    /// Position units per second of track time: 44100 for a fixed sample clock, or 0 when
+    /// the position counts samples of the loaded file (its own sample rate).
     pub position_rate_hz: f64,
     /// Zero-based index of the master deck, u8.
     pub master_deck: Chain,

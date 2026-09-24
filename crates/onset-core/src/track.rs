@@ -19,6 +19,8 @@ pub struct TrackMeta {
     pub key: Option<String>,
     pub bpm: Option<f32>,
     pub duration_s: Option<f32>,
+    /// The audio file's sample rate; rekordbox counts deck positions in these units.
+    pub sample_rate: Option<u32>,
     pub file_path: Option<PathBuf>,
     pub artwork_path: Option<PathBuf>,
     /// rekordbox-relative path of the `.DAT` analysis file, e.g. `/PIONEER/USBANLZ/…/ANLZ0000.DAT`.

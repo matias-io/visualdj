@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 
 use super::reader::{Mem, resolve_chain};
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct Chain {
     /// Offset of the static root from the module base.
     pub root: u64,

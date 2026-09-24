@@ -121,7 +121,10 @@ pub fn resolve_chain(mem: &impl Mem, chain: &Chain) -> Option<u64> {
 #[derive(Debug, Clone, PartialEq)]
 pub struct DeckState {
     pub bpm: f32,
+    /// Seconds of track time, when the position's unit is known.
     pub position_s: f64,
+    /// The position as read, in the offsets' unit.
+    pub position_raw: f64,
     pub track_info: Option<String>,
     pub anlz_path: Option<String>,
 }
@@ -129,11 +132,30 @@ pub struct DeckState {
 pub struct ChainReader<M: Mem> {
     mem: M,
     offsets: Offsets,
+    /// Sample rate of the loaded track, used when the offsets count file samples.
+    track_rate_hz: Option<f64>,
 }
 
 impl<M: Mem> ChainReader<M> {
     pub fn new(mem: M, offsets: Offsets) -> Self {
-        Self { mem, offsets }
+        Self {
+            mem,
+            offsets,
+            track_rate_hz: None,
+        }
+    }
+
+    pub fn set_track_sample_rate(&mut self, hz: Option<u32>) {
+        self.track_rate_hz = hz.map(f64::from);
+    }
+
+    /// Units per second for the position: the offsets' fixed rate, else the track's.
+    fn position_rate(&self) -> f64 {
+        if self.offsets.position_rate_hz > 0.0 {
+            self.offsets.position_rate_hz
+        } else {
+            self.track_rate_hz.unwrap_or(44_100.0)
+        }
     }
 
     pub fn offsets(&self) -> &Offsets {
@@ -188,7 +210,8 @@ impl<M: Mem> ChainReader<M> {
         }
         Some(DeckState {
             bpm,
-            position_s: raw / self.offsets.position_rate_hz,
+            position_s: raw / self.position_rate(),
+            position_raw: raw,
             track_info: d.track_info.as_ref().and_then(|c| self.read_text(c)),
             anlz_path: d.anlz_path.as_ref().and_then(|c| self.read_text(c)),
         })
@@ -368,6 +391,12 @@ mod live {
                     SourceStatus::Unsupported(format!("no offsets for rekordbox {version}"))
                 }
                 State::Connected { .. } => SourceStatus::Connected,
+            }
+        }
+
+        fn set_track_sample_rate(&mut self, hz: Option<u32>) {
+            if let State::Connected { reader, .. } = &mut self.state {
+                reader.set_track_sample_rate(hz);
             }
         }
 

@@ -18,6 +18,7 @@ fn move_track() -> TrackMeta {
         key: Some("11B".into()),
         bpm: Some(120.0),
         duration_s: Some(180.0),
+        sample_rate: Some(44_100),
         file_path: None,
         artwork_path: None,
         analysis_path: None,

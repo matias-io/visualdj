@@ -107,6 +107,25 @@ pub fn memresolve(lines: &[String]) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Pointer-scans the given absolute addresses and prints every static chain to each.
+pub fn memchains(addrs: &[String], depth: usize, branch: usize) -> anyhow::Result<()> {
+    let p = Process::open(REKORDBOX_EXE)?;
+    for text in addrs {
+        let addr = u64::from_str_radix(text.trim_start_matches("0x"), 16)
+            .map_err(|e| anyhow::anyhow!("{text}: {e}"))?;
+        let value = p.read_i64(addr).unwrap_or(-1);
+        println!("== {addr:#x} (i64 {value}): chains");
+        let chains = pointer_scan(&p, addr, depth, branch);
+        for c in &chains {
+            println!("  {}", chain_line(c));
+        }
+        if chains.is_empty() {
+            println!("  none");
+        }
+    }
+    Ok(())
+}
+
 pub struct MemscanArgs {
     pub bpm: Option<f32>,
     /// Title of the track loaded on the deck of interest: its text block and analysis path

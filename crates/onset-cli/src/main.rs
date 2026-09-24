@@ -104,6 +104,15 @@ enum Command {
         #[arg(long)]
         out: Option<PathBuf>,
     },
+    /// Print every static pointer chain to the given absolute addresses in rekordbox
+    Memchains {
+        /// Addresses in hex, e.g. 0x2d81797d2b4
+        addrs: Vec<String>,
+        #[arg(long, default_value_t = 6)]
+        depth: usize,
+        #[arg(long, default_value_t = 64)]
+        branch: usize,
+    },
     /// Resolve pointer chains (in the rkbx-link line format) against the running rekordbox
     Memresolve {
         /// Chains such as "05C64808 2A0 10 1175 109A 0"
@@ -121,9 +130,6 @@ enum Command {
         /// Seconds to wait after announcing a step in --auto mode
         #[arg(long, default_value_t = 30)]
         step_seconds: u64,
-        /// rekordbox data folder (for the library's tempo in --auto mode)
-        #[arg(long)]
-        app_dir: Option<PathBuf>,
     },
 }
 
@@ -175,6 +181,14 @@ fn main() -> anyhow::Result<()> {
         #[cfg(not(windows))]
         Command::Memscan { .. } => anyhow::bail!("memscan needs Windows"),
         #[cfg(windows)]
+        Command::Memchains {
+            addrs,
+            depth,
+            branch,
+        } => memscan::memchains(&addrs, depth, branch)?,
+        #[cfg(not(windows))]
+        Command::Memchains { .. } => anyhow::bail!("memchains needs Windows"),
+        #[cfg(windows)]
         Command::Memresolve { chains } => memscan::memresolve(&chains)?,
         #[cfg(not(windows))]
         Command::Memresolve { .. } => anyhow::bail!("memresolve needs Windows"),
@@ -183,7 +197,6 @@ fn main() -> anyhow::Result<()> {
             out_dir,
             auto,
             step_seconds,
-            app_dir,
         } => {
             let mode = if auto {
                 calibrate::Mode::Auto {
@@ -192,11 +205,7 @@ fn main() -> anyhow::Result<()> {
             } else {
                 calibrate::Mode::Interactive
             };
-            calibrate::calibrate(
-                &out_dir.unwrap_or_else(calibrate::default_out_dir),
-                mode,
-                app_dir,
-            )?;
+            calibrate::calibrate(&out_dir.unwrap_or_else(calibrate::default_out_dir), &mode)?;
         }
         #[cfg(not(windows))]
         Command::Calibrate { .. } => anyhow::bail!("calibrate needs Windows"),

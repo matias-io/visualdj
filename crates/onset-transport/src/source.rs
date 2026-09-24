@@ -17,4 +17,8 @@ pub trait TransportSource: Send {
     fn status(&self) -> SourceStatus;
     /// Called at up to 120 Hz. `None` when nothing new can be reported.
     fn poll(&mut self) -> Option<TransportSnapshot>;
+
+    /// The sample rate of the track the engine believes is loaded, for sources whose
+    /// position counts in samples of the file (rekordbox). Default: ignored.
+    fn set_track_sample_rate(&mut self, _hz: Option<u32>) {}
 }
