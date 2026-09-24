@@ -26,7 +26,7 @@ pub struct AppOptions {
 
 struct Surface {
     window: Arc<Window>,
-    surface: wgpu::Surface<'static>,
+    target: wgpu::Surface<'static>,
     gpu: Gpu,
     config: wgpu::SurfaceConfiguration,
 }
@@ -146,7 +146,7 @@ impl OnsetApp {
         self.monitor = monitor;
         self.surface = Some(Surface {
             window,
-            surface,
+            target: surface,
             gpu,
             config,
         });
@@ -160,7 +160,7 @@ impl OnsetApp {
         {
             s.config.width = size.width;
             s.config.height = size.height;
-            s.surface.configure(&s.gpu.device, &s.config);
+            s.target.configure(&s.gpu.device, &s.config);
             tracing::info!(
                 width = size.width,
                 height = size.height,
@@ -173,22 +173,22 @@ impl OnsetApp {
         let Some(s) = self.surface.as_mut() else {
             return;
         };
-        let frame = match s.surface.get_current_texture() {
+        let frame = match s.target.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(f) => f,
             wgpu::CurrentSurfaceTexture::Suboptimal(f) => {
                 // Still presentable; reconfigure so the next frame matches the surface.
-                s.surface.configure(&s.gpu.device, &s.config);
+                s.target.configure(&s.gpu.device, &s.config);
                 f
             }
             wgpu::CurrentSurfaceTexture::Timeout | wgpu::CurrentSurfaceTexture::Occluded => {
                 return;
             }
             wgpu::CurrentSurfaceTexture::Outdated | wgpu::CurrentSurfaceTexture::Lost => {
-                s.surface.configure(&s.gpu.device, &s.config);
+                s.target.configure(&s.gpu.device, &s.config);
                 return;
             }
-            other => {
-                tracing::error!("surface acquisition failed: {other:?}");
+            wgpu::CurrentSurfaceTexture::Validation => {
+                tracing::error!("surface acquisition failed validation");
                 return;
             }
         };

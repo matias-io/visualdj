@@ -16,9 +16,9 @@ pub enum MonitorChoice {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PresentModeChoice {
-    /// VSync, one frame of latency, never tears. The default.
+    /// `VSync`, one frame of latency, never tears. The default.
     Fifo,
-    /// VSync with the newest frame replacing a queued one; lower latency where supported.
+    /// `VSync` with the newest frame replacing a queued one; lower latency where supported.
     Mailbox,
 }
 
