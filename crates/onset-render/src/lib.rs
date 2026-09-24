@@ -4,3 +4,5 @@
 
 pub mod gpu;
 pub mod headless;
+pub mod scene;
+pub mod uniforms;
