@@ -1,0 +1,41 @@
+[package]
+name = "onset-app"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "Onset: real-time, structure-aware visuals for rekordbox DJs"
+
+[[bin]]
+name = "onset"
+path = "src/main.rs"
+
+[dependencies]
+onset-core.workspace = true
+onset-rekordbox.workspace = true
+onset-transport.workspace = true
+onset-audio.workspace = true
+onset-render.workspace = true
+anyhow.workspace = true
+clap.workspace = true
+directories.workspace = true
+serde.workspace = true
+toml.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+arc-swap.workspace = true
+crossbeam-channel.workspace = true
+winit.workspace = true
+wgpu.workspace = true
+egui.workspace = true
+egui-wgpu.workspace = true
+egui-winit.workspace = true
+pollster.workspace = true
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
