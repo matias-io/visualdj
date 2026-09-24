@@ -66,6 +66,10 @@ impl FrameBindings {
 
 pub trait Scene {
     fn name(&self) -> &str;
+    /// Scenes that are a single fragment shader expose themselves for hot reload.
+    fn as_fullscreen_mut(&mut self) -> Option<&mut FullscreenScene> {
+        None
+    }
     /// Called when the output size changes; scenes with internal targets reallocate here.
     fn resize(&mut self, _gpu: &Gpu, _size: (u32, u32)) {}
     /// Record this scene's draw into `encoder`, writing `target`.
@@ -112,9 +116,21 @@ impl FullscreenScene {
 
     /// Swap in a new fragment shader. On error the current pipeline stays in use.
     pub fn replace_shader(&mut self, gpu: &Gpu, fragment_wgsl: &str) -> Result<(), ShaderError> {
-        let pipeline = build_pipeline(
+        self.replace_shader_with_common(gpu, COMMON_WGSL, fragment_wgsl)
+    }
+
+    /// Like [`Self::replace_shader`] but with a caller-supplied common prelude (the on-disk
+    /// `common.wgsl`, so edits to it take effect without a rebuild).
+    pub fn replace_shader_with_common(
+        &mut self,
+        gpu: &Gpu,
+        common_wgsl: &str,
+        fragment_wgsl: &str,
+    ) -> Result<(), ShaderError> {
+        let pipeline = build_pipeline_with_common(
             gpu,
             &self.name,
+            common_wgsl,
             fragment_wgsl,
             self.format,
             &self.pipeline_layout,
@@ -132,7 +148,18 @@ fn build_pipeline(
     format: wgpu::TextureFormat,
     layout: &wgpu::PipelineLayout,
 ) -> Result<wgpu::RenderPipeline, ShaderError> {
-    let source = format!("{COMMON_WGSL}\n{fragment_wgsl}");
+    build_pipeline_with_common(gpu, name, COMMON_WGSL, fragment_wgsl, format, layout)
+}
+
+fn build_pipeline_with_common(
+    gpu: &Gpu,
+    name: &str,
+    common_wgsl: &str,
+    fragment_wgsl: &str,
+    format: wgpu::TextureFormat,
+    layout: &wgpu::PipelineLayout,
+) -> Result<wgpu::RenderPipeline, ShaderError> {
+    let source = format!("{common_wgsl}\n{fragment_wgsl}");
     let scope = gpu.device.push_error_scope(wgpu::ErrorFilter::Validation);
     let module = gpu
         .device
@@ -171,7 +198,11 @@ fn build_pipeline(
     match error {
         Some(e) => Err(ShaderError {
             name: name.to_string(),
-            message: e.to_string(),
+            // The Display form is just "Validation Error"; the description has the line info.
+            message: match &e {
+                wgpu::Error::Validation { description, .. } => description.clone(),
+                other => other.to_string(),
+            },
         }),
         None => Ok(pipeline),
     }
@@ -180,6 +211,10 @@ fn build_pipeline(
 impl Scene for FullscreenScene {
     fn name(&self) -> &str {
         &self.name
+    }
+
+    fn as_fullscreen_mut(&mut self) -> Option<&mut FullscreenScene> {
+        Some(self)
     }
 
     fn render(

@@ -3,8 +3,11 @@ use std::time::Instant;
 
 use onset_core::music_state::MusicState;
 
+use std::path::Path;
+
 use crate::gpu::Gpu;
-use crate::scene::{FrameBindings, Scene};
+use crate::hot_reload::ShaderWatcher;
+use crate::scene::{FrameBindings, Scene, ShaderError};
 use crate::uniforms::FrameUniforms;
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -18,6 +21,8 @@ pub struct Renderer {
     scenes: Vec<Box<dyn Scene>>,
     active: usize,
     size: (u32, u32),
+    /// The most recent hot-reload failure, shown by the HUD until a good reload clears it.
+    last_error: Option<String>,
 }
 
 impl Renderer {
@@ -27,6 +32,74 @@ impl Renderer {
             scenes: Vec::new(),
             active: 0,
             size,
+            last_error: None,
+        }
+    }
+
+    pub fn last_error(&self) -> Option<&str> {
+        self.last_error.as_deref()
+    }
+
+    /// Recompiles a fullscreen scene from new WGSL. On failure the old pipeline stays in use
+    /// and the message is kept for the HUD; on success the message is cleared.
+    pub fn reload_scene(&mut self, gpu: &Gpu, name: &str, source: &str) -> Result<(), ShaderError> {
+        self.reload_scene_with_common(gpu, name, crate::scene::COMMON_WGSL, source)
+    }
+
+    /// [`Self::reload_scene`] with the on-disk `common.wgsl` as the prelude.
+    pub fn reload_scene_with_common(
+        &mut self,
+        gpu: &Gpu,
+        name: &str,
+        common: &str,
+        source: &str,
+    ) -> Result<(), ShaderError> {
+        let scene = self
+            .scenes
+            .iter_mut()
+            .find(|s| s.name() == name)
+            .and_then(|s| s.as_fullscreen_mut())
+            .ok_or_else(|| ShaderError {
+                name: name.to_string(),
+                message: "no reloadable scene with that name".to_string(),
+            })?;
+        match scene.replace_shader_with_common(gpu, common, source) {
+            Ok(()) => {
+                self.last_error = None;
+                tracing::info!(scene = name, "shader reloaded");
+                Ok(())
+            }
+            Err(e) => {
+                tracing::error!("{e}");
+                self.last_error = Some(e.to_string());
+                Err(e)
+            }
+        }
+    }
+
+    /// Applies any shader files the watcher reports changed. `common.wgsl` reloads every scene.
+    pub fn poll_hot_reload(&mut self, gpu: &Gpu, watcher: &mut ShaderWatcher, shader_dir: &Path) {
+        let changed = watcher.poll();
+        if changed.is_empty() {
+            return;
+        }
+        let common = std::fs::read_to_string(shader_dir.join("common.wgsl"))
+            .unwrap_or_else(|_| crate::scene::COMMON_WGSL.to_string());
+        for stem in changed {
+            let targets: Vec<String> = if stem == "common" {
+                self.scene_names()
+            } else {
+                vec![stem]
+            };
+            for name in targets {
+                let path = shader_dir.join(format!("{name}.wgsl"));
+                match std::fs::read_to_string(&path) {
+                    Ok(src) => {
+                        let _ = self.reload_scene_with_common(gpu, &name, &common, &src);
+                    }
+                    Err(e) => tracing::warn!(path = %path.display(), "cannot read shader: {e}"),
+                }
+            }
         }
     }
 

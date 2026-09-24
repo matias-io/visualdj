@@ -6,6 +6,7 @@ use std::time::{Duration, Instant};
 use onset_core::music_state::MusicState;
 use onset_render::assets::shader_dir;
 use onset_render::gpu::Gpu;
+use onset_render::hot_reload::ShaderWatcher;
 use onset_render::renderer::Renderer;
 use onset_render::scenes::builtin_scenes;
 use winit::application::ApplicationHandler;
@@ -35,6 +36,7 @@ struct Surface {
     gpu: Gpu,
     config: wgpu::SurfaceConfiguration,
     renderer: Renderer,
+    watcher: Option<ShaderWatcher>,
 }
 
 pub struct OnsetApp {
@@ -179,6 +181,14 @@ impl OnsetApp {
             tracing::info!(requested = %self.opts.config.scene, "scene not found, using the first");
         }
 
+        let watcher = match ShaderWatcher::new(&shader_dir()) {
+            Ok(w) => Some(w),
+            Err(e) => {
+                tracing::warn!("shader hot reload disabled: {e:#}");
+                None
+            }
+        };
+
         self.monitor = monitor;
         self.surface = Some(Surface {
             window,
@@ -186,6 +196,7 @@ impl OnsetApp {
             gpu,
             config,
             renderer,
+            watcher,
         });
         Ok(())
     }
@@ -211,6 +222,9 @@ impl OnsetApp {
         let Some(s) = self.surface.as_mut() else {
             return;
         };
+        if let Some(w) = s.watcher.as_mut() {
+            s.renderer.poll_hot_reload(&s.gpu, w, &shader_dir());
+        }
         let frame = match s.target.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(f) => f,
             wgpu::CurrentSurfaceTexture::Suboptimal(f) => {

@@ -5,6 +5,7 @@
 pub mod assets;
 pub mod gpu;
 pub mod headless;
+pub mod hot_reload;
 pub mod renderer;
 pub mod scene;
 pub mod scenes;
