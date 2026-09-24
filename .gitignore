@@ -26,3 +26,6 @@ Thumbs.db
 
 # Plan execution scratch (ledger, briefs)
 .superpowers/
+
+# Agent worktrees
+.claude/worktrees/
