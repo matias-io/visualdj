@@ -50,6 +50,8 @@ pub enum EngineCommand {
     Seek(f64),
     SetRate(f32),
     LoadTrack(String),
+    /// Capture this device (name fragment), or pick automatically with `None`; applies now.
+    SetAudioDevice(Option<String>),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -109,6 +111,8 @@ pub struct Engine {
     commands: crossbeam_channel::Sender<EngineCommand>,
     tracks: Vec<TrackEntry>,
     simulator: bool,
+    /// The audio device being captured, for the launcher.
+    audio_device: Arc<ArcSwap<String>>,
     _thread: std::thread::JoinHandle<()>,
 }
 
@@ -119,6 +123,8 @@ struct Current {
     cues: Vec<HotCue>,
     /// How the source referred to it, so a repeat read is not a reload.
     track_ref: TrackRef,
+    /// The deck it plays on (live only), so a switch to an unknown track clears it.
+    deck: Option<u8>,
 }
 
 struct SimSource {
@@ -156,9 +162,50 @@ impl Source {
 }
 
 struct Capture {
-    _stream: LoopbackCapture,
+    stream: LoopbackCapture,
     rx: crossbeam_channel::Receiver<Vec<f32>>,
     analyzer: Analyzer,
+}
+
+/// How often the capture checks that it still has the right device.
+const AUDIO_CHECK: Duration = Duration::from_secs(3);
+
+/// Asks every few seconds, off the engine thread (listing devices takes tens of
+/// milliseconds), which device the capture should use for the current choice.
+fn spawn_audio_watch(
+    choice: Arc<parking_lot::Mutex<Option<String>>>,
+) -> crossbeam_channel::Receiver<Option<String>> {
+    let (tx, rx) = crossbeam_channel::bounded(1);
+    let spawned = std::thread::Builder::new()
+        .name("onset-audio-watch".into())
+        .spawn(move || {
+            loop {
+                let wanted = choice.lock().clone();
+                let name = onset_audio::capture::preferred_endpoint(wanted.as_deref());
+                if tx.send(name).is_err() {
+                    break;
+                }
+                std::thread::sleep(AUDIO_CHECK);
+            }
+        });
+    if let Err(e) = spawned {
+        tracing::warn!(error = %e, "cannot start the audio device watch");
+    }
+    rx
+}
+
+fn open_capture(choice: Option<&str>) -> Option<Capture> {
+    match LoopbackCapture::start(choice) {
+        Ok((stream, rx, rate)) => Some(Capture {
+            stream,
+            rx,
+            analyzer: Analyzer::new(rate),
+        }),
+        Err(e) => {
+            tracing::warn!("audio capture unavailable: {e:#}");
+            None
+        }
+    }
 }
 
 /// Finds the library row a transport reference points at.
@@ -192,7 +239,33 @@ fn load_current(
         analysis,
         cues,
         track_ref,
+        deck: None,
     }
+}
+
+/// Library tracks rekordbox streams (TIDAL, Beatport...) rather than reads from a file,
+/// with their 3-band waveforms, for [`crate::stream_match::StreamMatcher`].
+fn streaming_candidates(library: &Library, paths: &RekordboxPaths) -> Vec<crate::stream_match::Candidate> {
+    library
+        .tracks()
+        .iter()
+        .filter(|t| {
+            t.file_path.as_ref().is_some_and(|p| {
+                let s = p.to_string_lossy();
+                // A service URI such as "tidal:tracks:123" rather than a drive path.
+                s.find(':').is_some_and(|i| i > 1) && !s.contains('\\')
+            })
+        })
+        .filter_map(|t| {
+            let rel = t.analysis_path.as_deref()?;
+            let bytes = std::fs::read(paths.resolve_share(rel).with_extension("2EX")).ok()?;
+            let bands = onset_rekordbox::anlz::parse_2ex(&bytes)?;
+            (!bands.frames.is_empty()).then(|| crate::stream_match::Candidate {
+                meta: t.clone(),
+                bands: Arc::new(bands),
+            })
+        })
+        .collect()
 }
 
 fn start_sim(
@@ -266,20 +339,17 @@ impl Engine {
         };
         let simulator = matches!(source, Source::Sim(_));
         let capture = if cfg.capture_audio && !simulator {
-            match LoopbackCapture::start(cfg.audio_device.as_deref()) {
-                Ok((cap, rx, rate)) => Some(Capture {
-                    _stream: cap,
-                    rx,
-                    analyzer: Analyzer::new(rate),
-                }),
-                Err(e) => {
-                    tracing::warn!("loopback capture unavailable: {e:#}");
-                    None
-                }
-            }
+            open_capture(cfg.audio_device.as_deref())
         } else {
             None
         };
+        let audio_device = Arc::new(ArcSwap::from_pointee(
+            capture
+                .as_ref()
+                .map_or_else(|| "none".to_string(), |c| c.stream.name().to_string()),
+        ));
+        let audio_device_w = audio_device.clone();
+        let audio_choice = Arc::new(parking_lot::Mutex::new(cfg.audio_device.clone()));
 
         let (state_w, status_w) = (state.clone(), status.clone());
         let thread = std::thread::Builder::new()
@@ -298,7 +368,14 @@ impl Engine {
                     last_tick: Instant::now(),
                     last_status: None,
                     unresolved: None,
+                    matcher: None,
+                    deck: None,
+                    audio_checked: Instant::now(),
+                    audio_device: audio_device_w,
+                    audio_choice: audio_choice.clone(),
+                    audio_want: spawn_audio_watch(audio_choice),
                 };
+
                 engine.run(&rx, &state_w, &status_w);
             })?;
         Ok(Self {
@@ -307,6 +384,7 @@ impl Engine {
             commands: tx,
             tracks,
             simulator,
+            audio_device,
             _thread: thread,
         })
     }
@@ -323,6 +401,11 @@ impl Engine {
     /// Playable library tracks (audio file present), sorted by artist and title.
     pub fn tracks(&self) -> &[TrackEntry] {
         &self.tracks
+    }
+
+    /// The audio device being captured ("none" when capture could not start).
+    pub fn audio_device(&self) -> String {
+        (**self.audio_device.load()).clone()
     }
 
     /// True when the developer simulator is the source (transport controls apply).
@@ -374,6 +457,19 @@ struct Running {
     last_status: Option<EngineStatus>,
     /// The last track reference the library could not resolve, so it is reported once.
     unresolved: Option<TrackRef>,
+    /// Names streamed tracks by their sound when no file does; built the first time a
+    /// deck plays something no file names.
+    matcher: Option<crate::stream_match::StreamMatcher>,
+    /// The deck the last live snapshot came from.
+    deck: Option<u8>,
+    /// When the capture last checked it has the right device.
+    audio_checked: Instant,
+    /// Shared with the handle: the device being captured.
+    audio_device: Arc<ArcSwap<String>>,
+    /// The device choice, shared with the watch thread.
+    audio_choice: Arc<parking_lot::Mutex<Option<String>>>,
+    /// The watch thread's latest answer: the device the capture should use.
+    audio_want: crossbeam_channel::Receiver<Option<String>>,
 }
 
 impl Running {
@@ -428,6 +524,11 @@ impl Running {
                     }
                 }
             }
+            (EngineCommand::SetAudioDevice(choice), _) => {
+                self.cfg.audio_device.clone_from(choice);
+                self.audio_choice.lock().clone_from(choice);
+                self.tend_audio(true);
+            }
             (_, Source::Live(_)) => {
                 tracing::debug!(?cmd, "transport command ignored: rekordbox is in control");
             }
@@ -436,11 +537,30 @@ impl Running {
 
     /// A live snapshot names a track; keep `current` in step with it.
     fn follow_track(&mut self, snapshot: &TransportSnapshot) {
+        if self.deck != Some(snapshot.deck) {
+            self.deck = Some(snapshot.deck);
+            if let Some(m) = self.matcher.as_mut() {
+                m.reset();
+            }
+        }
+        if snapshot.track == TrackRef::Unknown {
+            // A deck with no file (a streamed track): keep what is known about this deck,
+            // but never show the previous deck's track over it.
+            if self.current.as_ref().is_some_and(|c| c.deck != Some(snapshot.deck)) {
+                tracing::info!(deck = snapshot.deck, "playing deck's track is not identified yet");
+                self.current = None;
+                self.clock = Clock::new();
+            }
+            return;
+        }
         let same = self
             .current
             .as_ref()
             .is_some_and(|c| c.track_ref == snapshot.track);
-        if same || snapshot.track == TrackRef::Unknown {
+        if same {
+            if let Some(c) = self.current.as_mut() {
+                c.deck = Some(snapshot.deck);
+            }
             return;
         }
         if let Some(meta) = resolve_track(&self.library, &snapshot.track) {
@@ -449,12 +569,9 @@ impl Running {
                 s.set_track_sample_rate(meta.sample_rate);
                 s.set_track_bpm(meta.bpm);
             }
-            self.current = Some(load_current(
-                &self.library,
-                &self.paths,
-                meta,
-                snapshot.track.clone(),
-            ));
+            let mut current = load_current(&self.library, &self.paths, meta, snapshot.track.clone());
+            current.deck = Some(snapshot.deck);
+            self.current = Some(current);
             self.clock = Clock::new();
             return;
         }
@@ -466,6 +583,82 @@ impl Running {
             self.current = None;
             self.clock = Clock::new();
         }
+    }
+
+    /// While the playing deck's track is unknown, listens for one of the library's streamed
+    /// tracks and adopts it once the sound matches.
+    fn recognise_stream(&mut self, now: Instant, time_s: f64) {
+        if !matches!(self.source, Source::Live(_)) || !self.clock.is_playing() {
+            return;
+        }
+        if self.matcher.is_none() {
+            let candidates = streaming_candidates(&self.library, &self.paths);
+            tracing::info!(tracks = candidates.len(), "streaming tracks that can be recognised by ear");
+            self.matcher = Some(crate::stream_match::StreamMatcher::new(candidates));
+        }
+        if !self.matcher.as_ref().is_some_and(crate::stream_match::StreamMatcher::has_candidates) {
+            return;
+        }
+        let Some(playhead) = self.clock.playhead_at(now) else {
+            return;
+        };
+        let a = self.audio(now);
+        let g = a.groups;
+        let Some(matcher) = self.matcher.as_mut() else {
+            return;
+        };
+        matcher.listen(
+            time_s,
+            playhead,
+            [f32::midpoint(g[0], g[1]), f32::midpoint(g[2], g[3]), f32::midpoint(g[4], g[5])],
+        );
+        if let Some(meta) = matcher.best().cloned() {
+            tracing::info!(title = %meta.title, artist = %meta.artist, "streamed track recognised by ear");
+            if let Source::Live(s) = &mut self.source {
+                s.set_track_sample_rate(meta.sample_rate);
+                s.set_track_bpm(meta.bpm);
+            }
+            let mut current = load_current(&self.library, &self.paths, meta, TrackRef::Unknown);
+            current.deck = self.deck;
+            self.current = Some(current);
+            if let Some(m) = self.matcher.as_mut() {
+                m.reset();
+            }
+        }
+    }
+
+    /// Keeps the capture on the right device: reopens it when the device went away (a
+    /// controller unplugged), and switches when the preferred one changes (the controller
+    /// plugged back in, or a new choice in the launcher). Checks every few seconds, or now
+    /// when `force` is set.
+    fn tend_audio(&mut self, force: bool) {
+        if !self.cfg.capture_audio || matches!(self.source, Source::Sim(_)) {
+            return;
+        }
+        let lost = self.capture.as_ref().is_none_or(|c| c.stream.is_lost());
+        let have = self.capture.as_ref().map(|c| c.stream.name().to_string());
+        // The watch thread's newest answer, if it has one.
+        let mut want = None;
+        while let Ok(w) = self.audio_want.try_recv() {
+            want = Some(w);
+        }
+        let switch = match &want {
+            Some(Some(name)) => have.as_ref() != Some(name),
+            _ => false,
+        };
+        let retry_lost = lost && self.audio_checked.elapsed() >= Duration::from_secs(1);
+        if !(force || switch || retry_lost) {
+            return;
+        }
+        self.audio_checked = Instant::now();
+        tracing::info!(from = ?have, to = ?want.flatten(), lost, "switching audio capture");
+        self.capture = None; // close the old stream before opening the new one
+        self.capture = open_capture(self.cfg.audio_device.as_deref());
+        let name = self
+            .capture
+            .as_ref()
+            .map_or_else(|| "none".to_string(), |c| c.stream.name().to_string());
+        self.audio_device.store(Arc::new(name));
     }
 
     fn audio(&mut self, now: Instant) -> AudioFeatures {
@@ -503,6 +696,10 @@ impl Running {
             self.clock.observe(&snapshot);
         }
 
+        self.tend_audio(false);
+        if self.current.is_none() {
+            self.recognise_stream(now, time_s);
+        }
         let Some(current) = self.current.as_ref() else {
             // No identified track: the visuals still get the audio and the playhead.
             let st = onset_core::structure::StructureState::default();

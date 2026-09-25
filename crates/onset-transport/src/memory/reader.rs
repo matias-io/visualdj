@@ -412,9 +412,17 @@ impl DeckFiles {
                 .iter()
                 .filter(|f| !self.assigned.iter().any(|a| a.as_ref() == Some(*f)))
                 .collect();
-            let free: Vec<usize> = (0..self.assigned.len())
+            let mut free: Vec<usize> = (0..self.assigned.len())
                 .filter(|i| self.assigned[*i].is_none())
                 .collect();
+            if !new_files.is_empty() && free.is_empty() {
+                // Two decks sharing a file (a double) whose playheads have split: the one
+                // nearer the start has just loaded something new, and may take a new file.
+                if let Some(i) = self.split_double(positions) {
+                    self.assigned[i] = None;
+                    free.push(i);
+                }
+            }
             if new_files.is_empty() || free.is_empty() {
                 break;
             }
@@ -453,7 +461,50 @@ impl DeckFiles {
                 break;
             }
         }
+        self.follow_doubles(positions);
         &self.assigned
+    }
+
+    /// Playheads this close on two decks with one file between them mean an instant double.
+    const DOUBLE_S: f64 = 1.5;
+
+    /// A free deck that has moved off zero and sits on another deck's playhead is playing
+    /// the same track (rekordbox opens the file once for both).
+    fn follow_doubles(&mut self, positions: &[Option<f64>]) {
+        for i in 0..self.assigned.len() {
+            if self.assigned[i].is_some() {
+                continue;
+            }
+            let Some(pi) = positions[i].filter(|p| *p > 0.5) else {
+                continue;
+            };
+            let twin = (0..self.assigned.len()).find(|&j| {
+                j != i
+                    && self.assigned[j].is_some()
+                    && positions[j].is_some_and(|pj| (pj - pi).abs() <= Self::DOUBLE_S)
+            });
+            if let Some(j) = twin {
+                self.assigned[i] = self.assigned[j].clone();
+            }
+        }
+    }
+
+    /// Of two decks sharing a file whose playheads now differ, the one nearer the start.
+    fn split_double(&self, positions: &[Option<f64>]) -> Option<usize> {
+        for i in 0..self.assigned.len() {
+            for j in (i + 1)..self.assigned.len() {
+                if self.assigned[i].is_none() || self.assigned[i] != self.assigned[j] {
+                    continue;
+                }
+                let (Some(pi), Some(pj)) = (positions[i], positions[j]) else {
+                    continue;
+                };
+                if (pi - pj).abs() > Self::DOUBLE_S * 2.0 {
+                    return Some(if pi < pj { i } else { j });
+                }
+            }
+        }
+        None
     }
 
     pub fn file_for(&self, deck: usize) -> Option<&PathBuf> {

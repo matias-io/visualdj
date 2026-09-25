@@ -75,6 +75,8 @@ pub struct OverlayView<'a> {
     /// Graphics adapters that could render, and the one in use.
     pub adapters: &'a [String],
     pub adapter: &'a str,
+    /// The audio device being captured right now.
+    pub audio_device: &'a str,
     /// rekordbox's analysis at the playhead, for the Audio tab.
     pub analysis: onset_core::bands::BandsAt,
     /// One line about the current track's lyrics ("synced lyrics from LRCLIB", "none found").
@@ -104,6 +106,8 @@ pub struct DrawResult {
 pub struct Edits {
     pub actions: Vec<OverlayAction>,
     pub changed: bool,
+    /// List the audio devices again (one was plugged in or out).
+    pub rescan_audio: bool,
 }
 
 impl Edits {
@@ -264,6 +268,9 @@ impl Overlay {
                     &mut self.tab,
                     &mut edits,
                 );
+                if edits.rescan_audio {
+                    self.endpoints = onset_audio::capture::list_endpoints();
+                }
             }
             Page::Settings | Page::Hidden => self.panel(config, view, &mut edits),
         }
@@ -515,17 +522,17 @@ pub fn audio_section(
                 .clicked()
             {
                 config.audio_device = None;
-                edits.changed = true;
+                edits.push(OverlayAction::Engine(EngineCommand::SetAudioDevice(None)));
             }
             for name in endpoints {
                 let selected = config.audio_device.as_deref() == Some(name.as_str());
                 if ui.selectable_label(selected, name).clicked() {
                     config.audio_device = Some(name.clone());
-                    edits.changed = true;
+                    edits.push(OverlayAction::Engine(EngineCommand::SetAudioDevice(Some(name.clone()))));
                 }
             }
         });
-    ui.small("Applies at the next start.");
+    ui.small("Applies immediately.");
 }
 
 #[cfg(test)]

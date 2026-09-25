@@ -761,3 +761,96 @@ fn capture_flag_states(
     }
     Ok((probes.into_iter().map(|p| p.name).collect(), states))
 }
+
+/// An offset into a window that starts `FLAG_REACH` before a deck's position field, as a
+/// signed offset from that field.
+fn rel_to_position(off: usize) -> i64 {
+    i64::try_from(off).unwrap_or(0) - FLAG_REACH.cast_signed()
+}
+
+/// Looks for rekordbox content IDs near every deck: in the memory around its position field,
+/// and one or two pointer hops away. Prints where each ID sits, so the deck's track can be
+/// read straight from memory.
+pub fn memids(offsets_dir: &std::path::Path, ids: &[u32]) -> anyhow::Result<()> {
+    use onset_transport::memory::offsets::Offsets;
+    use onset_transport::memory::reader::ChainReader;
+
+    let p = Process::open(REKORDBOX_EXE)?;
+    let version = p.file_version().unwrap_or_default();
+    let offsets = Offsets::find_version(offsets_dir, &version)
+        .ok_or_else(|| anyhow::anyhow!("no offsets for rekordbox {version}"))?;
+    let mut reader = ChainReader::new(p, offsets);
+    let needle = reader
+        .signature_needle()
+        .ok_or_else(|| anyhow::anyhow!("the offsets for {version} have no signature"))?;
+    println!("Finding the decks (about 20 s)...");
+    let hits = find_bytes(reader.mem(), &needle, 64);
+    reader.adopt_hits(&hits);
+    let positions = reader.deck_positions().to_vec();
+    let heap = heap_regions(reader.mem());
+    let in_heap = |v: u64| v.trailing_zeros() >= 3 && heap.iter().any(|r| r.contains(v));
+    let find = |buf: &[u8]| -> Vec<(usize, u32)> {
+        let mut out = Vec::new();
+        for (k, c) in buf.as_chunks::<4>().0.iter().enumerate() {
+            let v = u32::from_le_bytes(*c);
+            if ids.contains(&v) {
+                out.push((k * 4, v));
+            }
+        }
+        out
+    };
+    let mem = reader.mem();
+    for (d, pos) in positions.iter().enumerate() {
+        let base = pos - FLAG_REACH;
+        let window = read_zero_filled(mem, base, 2 * FLAG_REACH);
+        for (off, v) in find(&window) {
+            println!("deck {d}: id {v} at position {:+#x}", rel_to_position(off));
+        }
+        for (k, c) in window.as_chunks::<8>().0.iter().enumerate() {
+            let target = u64::from_le_bytes(*c);
+            if !in_heap(target) {
+                continue;
+            }
+            let at = rel_to_position(k * 8);
+            let obj = read_zero_filled(mem, target, 0x800);
+            for (off, v) in find(&obj) {
+                println!("deck {d}: id {v} at [position {at:+#x}] + {off:#x}");
+            }
+            for (k2, c2) in obj[..0x200].as_chunks::<8>().0.iter().enumerate() {
+                let t2 = u64::from_le_bytes(*c2);
+                if !in_heap(t2) {
+                    continue;
+                }
+                let obj2 = read_zero_filled(mem, t2, 0x400);
+                for (off, v) in find(&obj2) {
+                    println!("deck {d}: id {v} at [[position {at:+#x}] + {:#x}] + {off:#x}", k2 * 8);
+                }
+            }
+        }
+    }
+    println!("Whole heap:");
+    for id in ids {
+        for form in ["u32", "u64", "text"] {
+            let needle: Vec<u8> = match form {
+                "u32" => id.to_le_bytes().to_vec(),
+                "u64" => u64::from(*id).to_le_bytes().to_vec(),
+                _ => id.to_string().encode_utf16().flat_map(u16::to_le_bytes).collect(),
+            };
+            let found = find_bytes(mem, &needle, 400);
+            let near: Vec<String> = found
+                .iter()
+                .filter_map(|a| {
+                    positions
+                        .iter()
+                        .enumerate()
+                        .map(|(d, p)| (d, a.wrapping_sub(*p).cast_signed()))
+                        .min_by_key(|(_, dist)| dist.unsigned_abs())
+                        .filter(|(_, dist)| dist.unsigned_abs() < 0x10_0000)
+                        .map(|(d, dist)| format!("deck {d} {dist:+#x}"))
+                })
+                .collect();
+            println!("  {id} as {form}: {} hit(s); near a deck: {near:?}", found.len());
+        }
+    }
+    Ok(())
+}

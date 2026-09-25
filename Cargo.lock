@@ -2575,6 +2575,7 @@ dependencies = [
  "onset-rekordbox",
  "onset-render",
  "onset-transport",
+ "parking_lot",
  "pollster",
  "serde",
  "tempfile",

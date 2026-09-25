@@ -295,6 +295,10 @@ fn draw_overlay(
     let scenes = s.renderer.scene_names();
     let adapter = s.gpu.adapter_name();
     let lyrics_status = s.renderer.lyrics_status().to_string();
+    let audio_device = opts
+        .engine
+        .as_ref()
+        .map_or_else(|| "none".to_string(), crate::engine::Engine::audio_device);
     let overlay_view = OverlayView {
         monitors,
         scenes: &scenes,
@@ -314,6 +318,7 @@ fn draw_overlay(
         track: ms.track.as_ref(),
         adapters,
         adapter: &adapter,
+        audio_device: &audio_device,
         analysis: ms.analysis,
         lyrics_status: &lyrics_status,
     };

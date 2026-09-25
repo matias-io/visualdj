@@ -7,6 +7,7 @@ mod launcher;
 mod lyrics;
 mod monitors;
 mod overlay;
+mod stream_match;
 mod thumbs;
 
 use std::path::PathBuf;

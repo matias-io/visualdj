@@ -28,6 +28,7 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 arc-swap.workspace = true
 crossbeam-channel.workspace = true
+parking_lot.workspace = true
 winit.workspace = true
 wgpu.workspace = true
 egui.workspace = true

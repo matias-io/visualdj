@@ -161,6 +161,21 @@ fn nt_path_to_dos(nt: &str) -> PathBuf {
 /// The audio files the process with `pid` has open, in handle order (oldest first), each
 /// once.
 pub fn open_audio_files(pid: u32) -> anyhow::Result<Vec<PathBuf>> {
+    open_files_where(pid, |lower| {
+        AUDIO_EXTENSIONS
+            .iter()
+            .any(|ext| lower.ends_with(&format!(".{ext}")))
+    })
+}
+
+/// Every file the process with `pid` has open, for diagnosis.
+pub fn open_files(pid: u32) -> anyhow::Result<Vec<PathBuf>> {
+    open_files_where(pid, |_| true)
+}
+
+/// The files the process has open whose lower-case NT path passes `keep`, in handle order,
+/// each once.
+fn open_files_where(pid: u32, keep: impl Fn(&str) -> bool) -> anyhow::Result<Vec<PathBuf>> {
     // SAFETY: plain API calls with valid arguments; the handle is closed below.
     let process = unsafe { OpenProcess(PROCESS_DUP_HANDLE, 0, pid) };
     if process.is_null() {
@@ -204,11 +219,7 @@ pub fn open_audio_files(pid: u32) -> anyhow::Result<Vec<PathBuf>> {
             unsafe { CloseHandle(dup) };
             let Some(name) = name else { continue };
             let lower = name.to_lowercase();
-            if AUDIO_EXTENSIONS
-                .iter()
-                .any(|ext| lower.ends_with(&format!(".{ext}")))
-                && seen.insert(lower)
-            {
+            if keep(&lower) && seen.insert(lower) {
                 out.push(nt_path_to_dos(&name));
             }
         }

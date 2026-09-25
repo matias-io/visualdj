@@ -9,6 +9,9 @@
 //! mechanism this module relies on; it is a Windows-only trick, but this crate only ever targets
 //! Windows (see the workspace README).
 
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use anyhow::{Context, Result, anyhow};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{Device, Host, Sample, SampleFormat, Stream, StreamConfig};
@@ -62,6 +65,17 @@ pub fn looks_like_dj_gear(name: &str) -> bool {
 pub struct LoopbackCapture {
     /// Kept only to hold the stream open (and stop it on drop); never read otherwise.
     _stream: Stream,
+    /// The device being captured.
+    name: String,
+    /// Set when the device went away (unplugged, disabled); the capture then delivers nothing.
+    lost: Arc<AtomicBool>,
+}
+
+/// The name of the device [`LoopbackCapture::start`] would open for `endpoint_name` right now,
+/// for noticing a controller being plugged in or out.
+#[must_use]
+pub fn preferred_endpoint(endpoint_name: Option<&str>) -> Option<String> {
+    select_device(&cpal::default_host(), endpoint_name).map(|(d, _)| d.to_string())
 }
 
 impl LoopbackCapture {
@@ -101,12 +115,31 @@ impl LoopbackCapture {
         let stream_config: StreamConfig = config.config();
 
         let (tx, rx) = bounded::<Vec<f32>>(CHANNEL_CAPACITY);
-        let stream = build_stream(&device, &stream_config, sample_format, channels, tx)?;
+        let lost = Arc::new(AtomicBool::new(false));
+        let stream = build_stream(&device, &stream_config, sample_format, channels, tx, lost.clone())?;
         stream
             .play()
             .context("failed to start the loopback stream")?;
 
-        Ok((Self { _stream: stream }, rx, sample_rate))
+        Ok((
+            Self {
+                _stream: stream,
+                name: device.to_string(),
+                lost,
+            },
+            rx,
+            sample_rate,
+        ))
+    }
+
+    /// The device being captured.
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// True once the device has gone away.
+    pub fn is_lost(&self) -> bool {
+        self.lost.load(Ordering::Relaxed)
     }
 }
 
@@ -151,7 +184,19 @@ fn build_stream(
     sample_format: SampleFormat,
     channels: usize,
     tx: Sender<Vec<f32>>,
+    lost: Arc<AtomicBool>,
 ) -> Result<Stream> {
+    let on_error = move |err: cpal::Error| {
+        tracing::warn!("audio capture stream error: {err}");
+        if matches!(
+            err.kind(),
+            cpal::ErrorKind::DeviceNotAvailable
+                | cpal::ErrorKind::HostUnavailable
+                | cpal::ErrorKind::DeviceChanged
+        ) {
+            lost.store(true, Ordering::Relaxed);
+        }
+    };
     match sample_format {
         SampleFormat::F32 => {
             let mut pending = Vec::with_capacity(BLOCK_FRAMES * 2);
@@ -161,7 +206,7 @@ fn build_stream(
                     move |data: &[f32], _: &cpal::InputCallbackInfo| {
                         push_downmixed(&mut pending, data, channels, &tx);
                     },
-                    log_stream_error,
+                    on_error.clone(),
                     None,
                 )
                 .context("failed to build f32 loopback input stream")
@@ -177,7 +222,7 @@ fn build_stream(
                         floats.extend(data.iter().map(|s| s.to_float_sample()));
                         push_downmixed(&mut pending, &floats, channels, &tx);
                     },
-                    log_stream_error,
+                    on_error.clone(),
                     None,
                 )
                 .context("failed to build i16 loopback input stream")
@@ -193,7 +238,7 @@ fn build_stream(
                         floats.extend(data.iter().map(|s| s.to_float_sample()));
                         push_downmixed(&mut pending, &floats, channels, &tx);
                     },
-                    log_stream_error,
+                    on_error.clone(),
                     None,
                 )
                 .context("failed to build u16 loopback input stream")
@@ -203,12 +248,6 @@ fn build_stream(
              (only F32, I16 and U16 are supported)"
         )),
     }
-}
-
-// Takes `err` by value because it must match cpal's `FnMut(cpal::Error)` error-callback signature.
-#[allow(clippy::needless_pass_by_value)]
-fn log_stream_error(err: cpal::Error) {
-    tracing::warn!("loopback capture stream error: {err}");
 }
 
 /// Downmixes interleaved `data` (with `channels` channels per frame) to mono, appends it to

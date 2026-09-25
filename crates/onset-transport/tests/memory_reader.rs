@@ -396,3 +396,31 @@ fn deck_files_waits_when_it_cannot_tell() {
         .to_vec();
     assert_eq!(got, vec![None, None], "no guessing");
 }
+
+#[test]
+fn deck_files_follows_instant_doubles() {
+    let mut files = DeckFiles::default();
+    let none = |_: &Path| None;
+    files.update(&[p("a.flac")], &[Some(30.0), Some(0.0)], &none);
+    // Deck 2 copies deck 1 (same file, same playhead): one file is open for both.
+    let doubled = files
+        .update(&[p("a.flac")], &[Some(30.1), Some(30.2)], &none)
+        .to_vec();
+    assert_eq!(doubled, vec![Some(p("a.flac")), Some(p("a.flac"))]);
+    // Then deck 2 loads something else: the new file goes to the deck that jumped back.
+    let split = files
+        .update(&[p("a.flac"), p("b.flac")], &[Some(31.0), Some(0.0)], &none)
+        .to_vec();
+    assert_eq!(split, vec![Some(p("a.flac")), Some(p("b.flac"))]);
+}
+
+#[test]
+fn deck_files_does_not_call_distant_playheads_doubles() {
+    let mut files = DeckFiles::default();
+    let none = |_: &Path| None;
+    files.update(&[p("a.flac")], &[Some(30.0), Some(0.0)], &none);
+    let got = files
+        .update(&[p("a.flac")], &[Some(30.5), Some(12.0)], &none)
+        .to_vec();
+    assert_eq!(got, vec![Some(p("a.flac")), None]);
+}

@@ -131,6 +131,19 @@ enum Command {
         #[arg(long, default_value_t = 0x10000)]
         window: usize,
     },
+    /// Look for rekordbox content IDs near every deck, to read the loaded track from memory
+    Memids {
+        #[arg(value_delimiter = ',')]
+        ids: Vec<u32>,
+        #[arg(long)]
+        offsets_dir: Option<PathBuf>,
+    },
+    /// List the files rekordbox has open (diagnosis of track identification)
+    Handles {
+        /// Every file, not only audio
+        #[arg(long)]
+        all: bool,
+    },
     /// Look up synced lyrics for the collection (LRCLIB, MusicBrainz) and cache them
     Lyrics {
         #[arg(long)]
@@ -214,6 +227,27 @@ fn main() -> anyhow::Result<()> {
             seconds,
         } => live::sim(app_dir, &title, seek, gain, analyze, seconds)?,
         Command::Lyrics { app_dir, grep, offline } => library_cmds::lyrics(app_dir, grep, offline)?,
+        #[cfg(windows)]
+        Command::Memids { ids, offsets_dir } => memscan::memids(
+            &offsets_dir.unwrap_or_else(calibrate::default_out_dir),
+            &ids,
+        )?,
+        #[cfg(not(windows))]
+        Command::Memids { .. } => anyhow::bail!("memids needs Windows"),
+        #[cfg(windows)]
+        Command::Handles { all } => {
+            let p = onset_transport::memory::process::Process::open(onset_transport::memory::REKORDBOX_EXE)?;
+            let files = if all {
+                onset_transport::memory::handles::open_files(p.pid)?
+            } else {
+                onset_transport::memory::handles::open_audio_files(p.pid)?
+            };
+            for f in files {
+                println!("{}", f.display());
+            }
+        }
+        #[cfg(not(windows))]
+        Command::Handles { .. } => anyhow::bail!("handles needs Windows"),
         Command::Devices => live::devices(),
         Command::Listen { device, seconds } => live::listen(device.as_deref(), seconds)?,
         #[cfg(windows)]

@@ -9,7 +9,7 @@ use onset_render::renderer::Quality;
 use onset_render::scenes::scene_info;
 
 use crate::config::{Config, MonitorChoice, Preset, PresentModeChoice};
-use crate::engine::EngineStatus;
+use crate::engine::{EngineCommand, EngineStatus};
 use crate::overlay::{Edits, OverlayAction, OverlayView, monitor_detail, monitor_label};
 
 /// Window size the launcher opens at, in logical pixels (scaled by the monitor's DPI).
@@ -1037,24 +1037,30 @@ fn audio_tab(
     edits: &mut Edits,
 ) {
     ui.label("Onset listens to the mix to follow the drums and the spectrum.");
-    section(ui, "Listening to");
-    let current = config.audio_device.clone().unwrap_or_else(|| "Automatic".to_string());
-    egui::ComboBox::from_id_salt("audio")
-        .width(ui.available_width() - 10.0)
-        .selected_text(current)
-        .show_ui(ui, |ui| {
-            if ui.selectable_label(config.audio_device.is_none(), "Automatic").clicked() {
-                config.audio_device = None;
-                edits.changed = true;
-            }
-            for name in endpoints {
-                if ui.selectable_label(config.audio_device.as_deref() == Some(name.as_str()), name).clicked() {
-                    config.audio_device = Some(name.clone());
-                    edits.changed = true;
+    section_help(ui, "Listening to", "Automatic picks a DJ controller's recording input when one is plugged in (for a DDJ-FLX10 on ASIO that is 'Microphone (DDJ-FLX10)', which carries the master mix) and otherwise listens to what the speakers play. Unplug the controller and Onset moves to the speakers; plug it back in and it moves back.");
+    ui.label(format!("In use: {}", view.audio_device));
+    ui.horizontal(|ui| {
+        let current = config.audio_device.clone().unwrap_or_else(|| "Automatic".to_string());
+        egui::ComboBox::from_id_salt("audio")
+            .width(ui.available_width() - 90.0)
+            .selected_text(current)
+            .show_ui(ui, |ui| {
+                if ui.selectable_label(config.audio_device.is_none(), "Automatic").clicked() {
+                    config.audio_device = None;
+                    edits.push(OverlayAction::Engine(EngineCommand::SetAudioDevice(None)));
                 }
-            }
-        });
-    ui.label(egui::RichText::new("Automatic picks a DJ controller's recording input (for a DDJ-FLX10 on ASIO that is 'Microphone (DDJ-FLX10)', which carries the master mix) and otherwise listens to the default speakers. Applies at the next start.").small().weak());
+                for name in endpoints {
+                    if ui.selectable_label(config.audio_device.as_deref() == Some(name.as_str()), name).clicked() {
+                        config.audio_device = Some(name.clone());
+                        edits.push(OverlayAction::Engine(EngineCommand::SetAudioDevice(Some(name.clone()))));
+                    }
+                }
+            });
+        if ui.button("Rescan").on_hover_text("List the devices again after plugging something in.").clicked() {
+            edits.rescan_audio = true;
+        }
+    });
+    ui.label(egui::RichText::new("Changes apply immediately.").small().weak());
 
     section(ui, "What Onset hears");
     let audio = view.audio;
