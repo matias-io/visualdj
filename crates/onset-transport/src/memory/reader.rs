@@ -503,8 +503,9 @@ impl PlayTracker {
             Some((p0, t0)) if now.duration_since(t0) >= Self::RATE_WINDOW => {
                 let dt = now.duration_since(t0).as_secs_f64();
                 let r = (position_s - p0) / dt;
-                // A jump (cue, loop, seek) is not a rate; keep the previous estimate.
-                if playing && (0.5..=1.5).contains(&r) {
+                // A jump (cue, loop, seek) is not a rate; keep the previous estimate. Pitch
+                // faders reach ±16 %, so anything past ±20 % had a jump in the window.
+                if playing && (0.8..=1.2).contains(&r) {
                     self.rate = Some(self.rate.map_or(r, |old| old + 0.3 * (r - old)));
                 }
                 self.rate_anchor = Some((position_s, now));
