@@ -39,9 +39,9 @@ impl Preset {
 
     pub fn blurb(self) -> &'static str {
         match self {
-            Self::Chill => "Smooth and calm: gentle colour shifts, no shake, no inversions.",
-            Self::Club => "Punchy: flashes on drops and cues, some shake and the odd inversion.",
-            Self::Festival => "Everything big: strong flashes, shake, inversions and glitches.",
+            Self::Chill => "Smooth and calm: slow colour turns, soft build-ups, no shake or inversions.",
+            Self::Club => "Punchy: light sweeps before drops, a soft flash when they land, a slide on every new phrase.",
+            Self::Festival => "Everything big: full build-ups, bold drops with sway, inversions and glitches.",
             Self::Custom => "Your own mix of the sliders below.",
         }
     }
@@ -94,6 +94,11 @@ pub struct Config {
     pub quality: Quality,
     /// Substring of the graphics card to render on; `None` picks the fastest.
     pub gpu: Option<String>,
+    /// Per-scene speed, intensity and colour shift, by scene name.
+    pub tweaks: std::collections::BTreeMap<String, onset_core::show::SceneTweak>,
+    pub hud: onset_render::overlay_options::HudOptions,
+    pub card: onset_render::overlay_options::CardOptions,
+    pub lyrics: onset_render::overlay_options::LyricsOptions,
     /// Set when the file on disk failed to parse: saving would destroy the user's edits,
     /// so it is refused until they fix the file.
     #[serde(skip)]
@@ -119,6 +124,10 @@ impl Default for Config {
             fx: FxSettings::default(),
             quality: Quality::default(),
             gpu: None,
+            tweaks: std::collections::BTreeMap::new(),
+            hud: onset_render::overlay_options::HudOptions::default(),
+            card: onset_render::overlay_options::CardOptions::default(),
+            lyrics: onset_render::overlay_options::LyricsOptions::default(),
             read_only: false,
         }
     }
@@ -133,6 +142,7 @@ impl Config {
             auto: self.auto,
             auto_change: self.auto_change,
             rotation: self.rotation.clone(),
+            tweaks: self.tweaks.clone(),
         }
     }
 }
@@ -232,6 +242,31 @@ mod tests {
             },
             quality: Quality::Ultra,
             gpu: Some("NVIDIA".into()),
+            tweaks: [(
+                "tunnel".to_string(),
+                onset_core::show::SceneTweak {
+                    speed: 1.5,
+                    intensity: 0.5,
+                    hue: 0.25,
+                },
+            )]
+            .into_iter()
+            .collect(),
+            hud: onset_render::overlay_options::HudOptions {
+                size: 1.4,
+                key: true,
+                ..Default::default()
+            },
+            card: onset_render::overlay_options::CardOptions {
+                corner: onset_render::overlay_options::Corner::TopRight,
+                rating: true,
+                ..Default::default()
+            },
+            lyrics: onset_render::overlay_options::LyricsOptions {
+                style: onset_render::overlay_options::LyricStyle::Karaoke,
+                offset_s: -0.5,
+                ..Default::default()
+            },
             read_only: false,
         };
         cfg.save_to(&path).unwrap();

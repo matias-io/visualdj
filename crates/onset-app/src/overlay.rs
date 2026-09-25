@@ -39,6 +39,8 @@ pub enum OverlayAction {
     Look,
     /// Play a show event on the preview without music.
     Preview(onset_core::show::ShowEvent),
+    /// Play a four-second build-up ending in a drop on the preview.
+    PreviewBuild,
     NextScene,
 }
 
@@ -73,6 +75,10 @@ pub struct OverlayView<'a> {
     /// Graphics adapters that could render, and the one in use.
     pub adapters: &'a [String],
     pub adapter: &'a str,
+    /// rekordbox's analysis at the playhead, for the Audio tab.
+    pub analysis: onset_core::bands::BandsAt,
+    /// One line about the current track's lyrics ("synced lyrics from LRCLIB", "none found").
+    pub lyrics_status: &'a str,
 }
 
 /// Where a frame's panel is drawn.

@@ -102,6 +102,8 @@ pub struct RenderSettings {
     pub auto_change: AutoChange,
     /// Scenes in the Auto rotation; `None` uses each scene's default.
     pub rotation: Option<Vec<String>>,
+    /// Per-scene speed, intensity and colour shift, by scene name.
+    pub tweaks: std::collections::BTreeMap<String, onset_core::show::SceneTweak>,
 }
 
 impl Default for RenderSettings {
@@ -112,9 +114,13 @@ impl Default for RenderSettings {
             auto: true,
             auto_change: AutoChange::default(),
             rotation: None,
+            tweaks: std::collections::BTreeMap::new(),
         }
     }
 }
+
+/// Length of the launcher's build-up preview.
+const BUILD_PREVIEW_S: f32 = 4.0;
 
 struct ActiveTransition {
     from: usize,
@@ -151,6 +157,12 @@ pub struct Renderer {
     hud: Hud,
     show_card: bool,
     show_hud: bool,
+    /// One line about the current track's lyrics, for the launcher.
+    lyrics_status: String,
+    /// When a launcher build-up preview started (renderer clock), while it runs.
+    build_preview: Option<f32>,
+    hud_options: crate::overlay_options::HudOptions,
+    card_options: crate::overlay_options::CardOptions,
     /// Window DPI factor; the HUD scales with it, the card scales with the frame height.
     scale: f32,
     last_cpu_ms: f32,
@@ -196,6 +208,10 @@ impl Renderer {
             card: Card::new(gpu, format),
             hud: Hud::new(),
             show_card: true,
+            build_preview: None,
+            lyrics_status: String::new(),
+            hud_options: crate::overlay_options::HudOptions::default(),
+            card_options: crate::overlay_options::CardOptions::default(),
             show_hud: false,
             scale: 1.0,
             last_cpu_ms: 0.0,
@@ -260,6 +276,16 @@ impl Renderer {
         self.show.inject(event);
     }
 
+    /// One line about the current track's lyrics.
+    pub fn lyrics_status(&self) -> &str {
+        &self.lyrics_status
+    }
+
+    /// Plays a four-second build-up on the preview, ending in a drop.
+    pub fn preview_build(&mut self) {
+        self.build_preview = Some(self.frame_clock);
+    }
+
     pub fn last_events(&self) -> &[ShowEvent] {
         &self.last_events
     }
@@ -320,6 +346,16 @@ impl Renderer {
 
     pub fn set_scale(&mut self, scale: f32) {
         self.scale = scale.max(0.1);
+    }
+
+    /// What the HUD and the Now Playing card show, and how big.
+    pub fn set_overlay_options(
+        &mut self,
+        hud: crate::overlay_options::HudOptions,
+        card: crate::overlay_options::CardOptions,
+    ) {
+        self.hud_options = hud;
+        self.card_options = card;
     }
 
     pub fn set_show_card(&mut self, show: bool) {
@@ -547,12 +583,13 @@ impl Renderer {
         t: Option<(f32, f32)>,
     ) -> PostUniforms {
         let s = &self.settings.fx;
-        // Shake: two incommensurate wobbles, so it never looks like a loop.
-        let amp = fx.shake * 0.012;
+        // Shake: two slow, incommensurate wobbles. Fast ones read as jitter.
+        let amp = fx.shake * 0.008;
         let shake = [
-            amp * ((time_s * 37.0).sin() * 0.6 + (time_s * 23.0).sin() * 0.4),
-            amp * ((time_s * 31.0).cos() * 0.6 + (time_s * 19.0).sin() * 0.4),
+            amp * ((time_s * 7.3).sin() * 0.6 + (time_s * 4.1).sin() * 0.4),
+            amp * ((time_s * 6.1).cos() * 0.6 + (time_s * 3.7).sin() * 0.4),
         ];
+        let pal = self.palette_now;
         let (progress, kind) = t.unwrap_or((0.0, 0.0));
         let intensity = ms.intensity.clamp(0.0, 1.0);
         PostUniforms {
@@ -578,6 +615,10 @@ impl Renderer {
             ],
             tone: [1.0, fx.seed, 0.9, if self.blackout { 1.0 } else { 0.0 }],
             trans: [progress, kind, 0.0, fx.tension],
+            build: [fx.build, fx.beat_count, fx.phrase_move, fx.move_angle],
+            style: [s.buildup, fx.vocal, 0.0, 0.0],
+            accent: [pal[2][0], pal[2][1], pal[2][2], 1.0],
+            accent2: [pal[3][0], pal[3][1], pal[3][2], 1.0],
         }
     }
 
@@ -630,7 +671,17 @@ impl Renderer {
         if !events.is_empty() {
             self.last_events = events;
         }
-        let fx = self.show.fx();
+        let mut fx = self.show.fx();
+        if let Some(start) = self.build_preview {
+            let p = (time_s - start) / BUILD_PREVIEW_S;
+            if p >= 1.0 {
+                self.build_preview = None;
+                self.show.inject(ShowEvent::Drop);
+            } else {
+                fx.build = p.clamp(0.0, 1.0);
+                fx.tension = fx.build;
+            }
+        }
 
         // Transition bookkeeping.
         let mut transition = None;
@@ -660,6 +711,11 @@ impl Renderer {
             quality: self.settings.quality.code(),
             history_row: self.bindings.history_row(),
             theme: Some(self.palette_now),
+            tweak: self
+                .active_scene()
+                .and_then(|n| self.settings.tweaks.get(n))
+                .copied()
+                .unwrap_or_default(),
         };
         self.bindings.write(
             gpu,
@@ -713,6 +769,7 @@ impl Renderer {
                     live_bpm: ms.bpm,
                     time_s,
                     emphasis: fx.emphasis,
+                    options: &self.card_options,
                 },
             ));
         }
@@ -724,7 +781,10 @@ impl Renderer {
                 last_error: self.last_error.clone(),
                 source: self.source_line.clone(),
             };
-            items.extend(self.hud.items(ms, &info, self.scale * grow));
+            items.extend(
+                self.hud
+                    .items(ms, &info, self.scale * grow, &self.hud_options),
+            );
         }
         if !items.is_empty() {
             match self.text.prepare(gpu, self.size, &items) {

@@ -34,6 +34,11 @@ pub struct FxSettings {
     pub chaos: f32,
     /// How much the Now Playing card and HUD grow on a track change or drop.
     pub emphasis: f32,
+    /// Build-up animation before drops and phrase ends: light bars sweeping across the
+    /// screen, a slow push in and a colour cycle, all growing towards the change.
+    pub buildup: f32,
+    /// A full-screen slide with a band of light on every phrase change.
+    pub moves: f32,
     /// Full-screen strobe on drops. Off by default: it can trigger photosensitive seizures.
     pub strobe: bool,
 }
@@ -51,34 +56,40 @@ impl FxSettings {
         grain: 0.25,
         chaos: 0.2,
         emphasis: 0.5,
+        buildup: 0.35,
+        moves: 0.3,
         strobe: false,
     };
     pub const CLUB: Self = Self {
         reactivity: 1.0,
-        flashes: 0.55,
-        shake: 0.35,
+        flashes: 0.45,
+        shake: 0.2,
         colour: 0.65,
-        inversions: 0.35,
-        glitch: 0.35,
+        inversions: 0.3,
+        glitch: 0.25,
         bloom: 0.8,
         trails: 0.45,
         grain: 0.2,
-        chaos: 0.45,
+        chaos: 0.4,
         emphasis: 0.7,
+        buildup: 0.65,
+        moves: 0.55,
         strobe: false,
     };
     pub const FESTIVAL: Self = Self {
-        reactivity: 1.4,
-        flashes: 0.9,
-        shake: 0.7,
+        reactivity: 1.35,
+        flashes: 0.7,
+        shake: 0.4,
         colour: 0.9,
-        inversions: 0.7,
-        glitch: 0.6,
+        inversions: 0.5,
+        glitch: 0.4,
         bloom: 1.0,
         trails: 0.4,
         grain: 0.15,
-        chaos: 0.75,
+        chaos: 0.65,
         emphasis: 0.9,
+        buildup: 1.0,
+        moves: 0.85,
         strobe: false,
     };
 }
@@ -86,6 +97,29 @@ impl FxSettings {
 impl Default for FxSettings {
     fn default() -> Self {
         Self::CLUB
+    }
+}
+
+/// The DJ's adjustments to one scene: how fast it moves, how hard it reacts, and a turn of
+/// the colour wheel.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SceneTweak {
+    /// Motion speed, 1 = as designed (0.25..2).
+    pub speed: f32,
+    /// Audio response, 1 = as designed (0..2).
+    pub intensity: f32,
+    /// Colour shift in turns of the palette (0..1).
+    pub hue: f32,
+}
+
+impl Default for SceneTweak {
+    fn default() -> Self {
+        Self {
+            speed: 1.0,
+            intensity: 1.0,
+            hue: 0.0,
+        }
     }
 }
 
@@ -113,6 +147,15 @@ pub struct Fx {
     pub track_hit: f32,
     /// Rises over the 16 beats before an announced drop.
     pub tension: f32,
+    /// Build-up progress 0..1: the tension before a drop, or half as much over the last
+    /// eight beats of any phrase. The renderer sweeps light across the screen with it.
+    pub build: f32,
+    /// Decaying marker of a phrase change, scaled by the moves setting, and the direction
+    /// (turns) the slide goes.
+    pub phrase_move: f32,
+    pub move_angle: f32,
+    /// rekordbox's vocal level, smoothed.
+    pub vocal: f32,
     /// Beats and bars since the start of the track (fractional).
     pub beat_count: f32,
     pub bar_count: f32,
@@ -308,13 +351,14 @@ impl ShowDirector {
         let fx = &mut self.fx;
 
         // Decays first, so an event this frame lands at full strength.
-        fx.flash = decay(fx.flash, dt, 0.22);
+        fx.flash = decay(fx.flash, dt, 0.3);
         fx.phrase_hit = decay(fx.phrase_hit, dt, 1.0);
         fx.cue_hit = decay(fx.cue_hit, dt, 0.6);
         fx.track_hit = decay(fx.track_hit, dt, 2.0);
         fx.drop_hit = decay(fx.drop_hit, dt, beat_s * 4.0);
         fx.emphasis = decay(fx.emphasis, dt, 0.9);
         fx.glitch = decay(fx.glitch, dt, 0.35);
+        fx.phrase_move = decay(fx.phrase_move, dt, beat_s * 1.5);
         self.shake_burst = decay(self.shake_burst, dt, 0.4);
         self.zoom_burst = decay(self.zoom_burst, dt, beat_s * 1.5);
 
@@ -331,6 +375,8 @@ impl ShowDirector {
                     self.invert_target = 0.0;
                 }
                 ShowEvent::Drop => {
+                    fx.phrase_move = fx.phrase_move.max(s.moves);
+                    fx.move_angle = self.rng.unit();
                     fx.flash = fx.flash.max(s.flashes);
                     fx.flash_color = [1.0, 1.0, 1.0];
                     fx.drop_hit = 1.0;
@@ -348,12 +394,16 @@ impl ShowDirector {
                 }
                 ShowEvent::Breakdown => {
                     fx.phrase_hit = 1.0;
+                    fx.phrase_move = fx.phrase_move.max(s.moves);
+                    fx.move_angle = self.rng.unit();
                     fx.flash = fx.flash.max(0.2 * s.flashes);
                     self.hue_target -= (0.1 + 0.15 * self.rng.unit()) * s.colour;
                     self.invert_target = 0.0;
                 }
                 ShowEvent::Phrase(_) => {
                     fx.phrase_hit = 1.0;
+                    fx.phrase_move = fx.phrase_move.max(s.moves);
+                    fx.move_angle = self.rng.unit();
                     fx.flash = fx.flash.max(0.35 * s.flashes);
                     let sign = if self.rng.chance(0.5) { 1.0 } else { -1.0 };
                     self.hue_target += sign * (0.08 + 0.17 * self.rng.unit()) * s.colour;
@@ -415,7 +465,7 @@ impl ShowDirector {
         fx.hue = approach(fx.hue, self.hue_target, dt, 0.7);
 
         let kick = ms.audio.kick * s.reactivity;
-        fx.shake = (kick * s.shake * ms.intensity * 0.6 + self.shake_burst).min(1.0);
+        fx.shake = (kick * s.shake * ms.intensity * 0.35 + self.shake_burst).min(1.0);
         fx.zoom = kick * 0.03 + self.zoom_burst;
 
         fx.tension = match ms.drop_countdown_beats {
@@ -424,6 +474,14 @@ impl ShowDirector {
             }
             _ => 0.0,
         };
+        let phrase_end = match ms.beats_to_next_phrase {
+            Some(n) if n <= 8 && ms.playing => {
+                0.5 * ((8.0 - n as f32 + ms.beat_phase) / 8.0).clamp(0.0, 1.0)
+            }
+            _ => 0.0,
+        };
+        fx.build = fx.tension.max(phrase_end);
+        fx.vocal = approach(fx.vocal, ms.analysis.vocal, dt, 0.15);
 
         // Strobe: only when enabled, only right after a drop, at most three flashes a second.
         fx.strobe = if s.strobe && fx.drop_hit > 0.3 && ms.playing {
@@ -811,6 +869,7 @@ mod tests {
             analysis_path: None,
             isrc: None,
             genre: genre.map(Into::into),
+            extra: crate::track::TrackExtra::default(),
         }
     }
 
@@ -833,7 +892,7 @@ mod tests {
         d.update(&playing(Some(PhraseKind::Up), 60), 0.016, &s);
         let events = d.update(&playing(Some(PhraseKind::Chorus), 64), 0.016, &s);
         assert!(events.contains(&ShowEvent::Drop), "{events:?}");
-        assert!(d.fx().flash > 0.8);
+        assert!(d.fx().flash >= s.flashes - 0.01);
         assert!((d.fx().drop_hit - 1.0).abs() < 0.01);
 
         let mut quiet = ShowDirector::new();
@@ -1038,5 +1097,75 @@ mod tests {
                 .on_events(&[ShowEvent::Track], v, &p, &allowed, AutoChange::Off, 0.5)
                 .is_none()
         );
+    }
+    fn before_drop(beats_left: u32) -> MusicState {
+        MusicState {
+            drop_countdown_beats: Some(beats_left),
+            beats_to_next_phrase: Some(beats_left),
+            next_phrase: Some(PhraseKind::Chorus),
+            ..playing(Some(PhraseKind::Up), 100 - beats_left)
+        }
+    }
+
+    #[test]
+    fn the_build_up_rises_towards_the_drop() {
+        let mut d = ShowDirector::new();
+        let s = FxSettings::CLUB;
+        d.update(&before_drop(20), 0.016, &s);
+        assert!(d.fx().build < 1e-3, "nothing yet 20 beats out");
+        d.update(&before_drop(12), 0.016, &s);
+        let mid = d.fx().build;
+        d.update(&before_drop(2), 0.016, &s);
+        let late = d.fx().build;
+        assert!(mid > 0.1 && late > mid && late <= 1.0, "{mid} {late}");
+    }
+
+    #[test]
+    fn a_phrase_end_without_a_drop_builds_half_as_much() {
+        let mut d = ShowDirector::new();
+        let s = FxSettings::CLUB;
+        let ms = MusicState {
+            beats_to_next_phrase: Some(1),
+            next_phrase: Some(PhraseKind::Verse),
+            ..playing(Some(PhraseKind::Intro), 30)
+        };
+        d.update(&ms, 0.016, &s);
+        let b = d.fx().build;
+        assert!(b > 0.2 && b <= 0.5, "{b}");
+    }
+
+    #[test]
+    fn a_phrase_change_starts_a_move_scaled_by_the_setting() {
+        let s = FxSettings::CLUB;
+        let mut d = ShowDirector::new();
+        d.update(&playing(Some(PhraseKind::Intro), 30), 0.016, &s);
+        d.update(&playing(Some(PhraseKind::Verse), 32), 0.016, &s);
+        assert!((d.fx().phrase_move - s.moves).abs() < 0.02, "{}", d.fx().phrase_move);
+        let off = FxSettings { moves: 0.0, ..s };
+        let mut q = ShowDirector::new();
+        q.update(&playing(Some(PhraseKind::Intro), 30), 0.016, &off);
+        q.update(&playing(Some(PhraseKind::Verse), 32), 0.016, &off);
+        assert!(q.fx().phrase_move < 1e-3);
+    }
+
+    #[test]
+    fn the_vocal_level_follows_the_analysis_smoothly() {
+        let s = FxSettings::CLUB;
+        let mut d = ShowDirector::new();
+        let mut ms = playing(Some(PhraseKind::Verse), 30);
+        ms.analysis.vocal = 1.0;
+        d.update(&ms, 0.016, &s);
+        let first = d.fx().vocal;
+        for _ in 0..60 {
+            d.update(&ms, 0.016, &s);
+        }
+        assert!(first < 0.5 && d.fx().vocal > 0.8, "{first} {}", d.fx().vocal);
+    }
+
+    #[test]
+    fn presets_stay_gentle_on_the_camera() {
+        for p in [FxSettings::CHILL, FxSettings::CLUB, FxSettings::FESTIVAL] {
+            assert!(p.shake <= 0.45 && p.flashes <= 0.75, "{p:?}");
+        }
     }
 }

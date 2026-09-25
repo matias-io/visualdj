@@ -29,6 +29,21 @@ pub struct TrackMeta {
     /// rekordbox's genre tag, when set.
     #[serde(default)]
     pub genre: Option<String>,
+    /// Everything else the DJ keeps about the track in rekordbox.
+    #[serde(default)]
+    pub extra: TrackExtra,
+}
+
+/// rekordbox library details beyond the basics, for the Now Playing card and Auto mode.
+#[derive(Debug, Clone, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+pub struct TrackExtra {
+    pub label: Option<String>,
+    pub comment: Option<String>,
+    /// Stars, 0..=5.
+    pub rating: u8,
+    pub play_count: u32,
+    /// The DJ's My Tags (e.g. "Vocal", "Peak Time").
+    pub my_tags: Vec<String>,
 }
 
 /// A memory cue or hot cue.

@@ -28,6 +28,13 @@ pub struct PostUniforms {
     pub tone: [f32; 4],
     /// Transition progress, transition kind, emphasis, tension.
     pub trans: [f32; 4],
+    /// Build-up progress, beat count, phrase move (decaying), move direction (turns).
+    pub build: [f32; 4],
+    /// Build-up strength, vocal level, unused, unused.
+    pub style: [f32; 4],
+    /// Two palette colours (linear rgb) for the sweeps.
+    pub accent: [f32; 4],
+    pub accent2: [f32; 4],
 }
 
 impl Default for PostUniforms {
@@ -40,6 +47,10 @@ impl Default for PostUniforms {
             look: [0.8, 0.2, 0.35, 0.002],
             tone: [1.0, 0.0, 1.0, 0.0],
             trans: [0.0; 4],
+            build: [0.0; 4],
+            style: [0.0; 4],
+            accent: [1.0; 4],
+            accent2: [1.0; 4],
         }
     }
 }

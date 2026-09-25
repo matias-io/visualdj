@@ -24,6 +24,7 @@ fn move_track() -> TrackMeta {
         analysis_path: None,
         isrc: None,
         genre: None,
+        extra: onset_core::track::TrackExtra::default(),
     }
 }
 

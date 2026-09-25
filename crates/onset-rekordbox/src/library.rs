@@ -2,7 +2,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use onset_core::track::{HotCue, TrackId, TrackMeta};
+use onset_core::track::{HotCue, TrackExtra, TrackId, TrackMeta};
 use rusqlite::{Connection, OpenFlags};
 
 use crate::cache;
@@ -30,6 +30,34 @@ fn hot_cue_slot(kind: i64) -> u8 {
     }
 }
 
+/// Adds each track's My Tags (leaf names, not the category roots). Failures leave them empty:
+/// they are a nicety, not something to refuse the library over.
+fn attach_my_tags(conn: &Connection, tracks: &mut [TrackMeta]) {
+    let Ok(mut stmt) = conn.prepare(
+        "SELECT s.ContentID, t.Name FROM djmdSongMyTag s
+         JOIN djmdMyTag t ON t.ID = s.MyTagID
+         WHERE t.ParentID != 'root' AND s.rb_local_deleted = 0
+         ORDER BY s.ContentID, t.Seq",
+    ) else {
+        return;
+    };
+    let Ok(rows) = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
+    else {
+        return;
+    };
+    let mut by_id: HashMap<u64, Vec<String>> = HashMap::new();
+    for (id, name) in rows.flatten() {
+        if let Ok(id) = id.parse::<u64>() {
+            by_id.entry(id).or_default().push(name);
+        }
+    }
+    for t in tracks {
+        if let Some(tags) = by_id.remove(&t.id.0) {
+            t.extra.my_tags = tags;
+        }
+    }
+}
+
 fn open_read_only(path: &Path) -> rusqlite::Result<Connection> {
     Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)
 }
@@ -42,9 +70,11 @@ impl Library {
         let mut stmt = conn.prepare(
             "SELECT c.ID, c.Title, IFNULL(a.Name, ''), IFNULL(al.Name, ''), c.ReleaseYear,
                     k.ScaleName, c.BPM, c.Length, c.FolderPath, c.ImagePath,
-                    c.AnalysisDataPath, c.ISRC, c.SampleRate, g.Name
+                    c.AnalysisDataPath, c.ISRC, c.SampleRate, g.Name,
+                    lb.Name, c.Commnt, c.Rating, c.DJPlayCount
              FROM djmdContent c
              LEFT JOIN djmdGenre g ON g.ID = c.GenreID
+             LEFT JOIN djmdLabel lb ON lb.ID = c.LabelID
              LEFT JOIN djmdArtist a ON a.ID = c.ArtistID
              LEFT JOIN djmdAlbum al ON al.ID = c.AlbumID
              LEFT JOIN djmdKey k ON k.ID = c.KeyID
@@ -79,9 +109,27 @@ impl Library {
                 genre: r
                     .get::<_, Option<String>>(13)?
                     .filter(|s| !s.trim().is_empty()),
+                extra: TrackExtra {
+                    label: r
+                        .get::<_, Option<String>>(14)?
+                        .filter(|s| !s.trim().is_empty()),
+                    comment: r
+                        .get::<_, Option<String>>(15)?
+                        .filter(|s| !s.trim().is_empty()),
+                    rating: r
+                        .get::<_, Option<i64>>(16)?
+                        .and_then(|v| u8::try_from(v.clamp(0, 5)).ok())
+                        .unwrap_or(0),
+                    play_count: r
+                        .get::<_, Option<i64>>(17)?
+                        .and_then(|v| u32::try_from(v.max(0)).ok())
+                        .unwrap_or(0),
+                    my_tags: Vec::new(),
+                },
             })
         })?;
-        let tracks: Vec<TrackMeta> = rows.collect::<Result<_, _>>()?;
+        let mut tracks: Vec<TrackMeta> = rows.collect::<Result<_, _>>()?;
+        attach_my_tags(&conn, &mut tracks);
 
         let by_id = tracks.iter().enumerate().map(|(i, t)| (t.id, i)).collect();
         let by_analysis = tracks

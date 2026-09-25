@@ -291,6 +291,7 @@ fn draw_overlay(
         };
     let scenes = s.renderer.scene_names();
     let adapter = s.gpu.adapter_name();
+    let lyrics_status = s.renderer.lyrics_status().to_string();
     let overlay_view = OverlayView {
         monitors,
         scenes: &scenes,
@@ -310,6 +311,8 @@ fn draw_overlay(
         track: ms.track.as_ref(),
         adapters,
         adapter: &adapter,
+        analysis: ms.analysis,
+        lyrics_status: &lyrics_status,
     };
     let target = DrawTarget {
         window: &s.window,
@@ -444,6 +447,7 @@ impl OnsetApp {
         renderer.set_show_card(self.opts.config.show_card);
         renderer.set_show_hud(self.opts.config.show_hud);
         renderer.set_settings(&gpu, self.render_settings());
+        renderer.set_overlay_options(self.opts.config.hud.clone(), self.opts.config.card.clone());
         renderer.set_internal_scale(&gpu, self.opts.config.internal_scale);
         load_scenes(&gpu, &mut renderer);
         let wanted = self
@@ -685,13 +689,20 @@ impl OnsetApp {
             OverlayAction::Quit => self.exiting = true,
             OverlayAction::Look => {
                 let settings = self.render_settings();
+                let (hud, card) = (self.opts.config.hud.clone(), self.opts.config.card.clone());
                 if let Some(s) = self.surface.as_mut() {
                     s.renderer.set_settings(&s.gpu, settings);
+                    s.renderer.set_overlay_options(hud, card);
                 }
             }
             OverlayAction::Preview(event) => {
                 if let Some(s) = self.surface.as_mut() {
                     s.renderer.preview_event(event);
+                }
+            }
+            OverlayAction::PreviewBuild => {
+                if let Some(s) = self.surface.as_mut() {
+                    s.renderer.preview_build();
                 }
             }
             OverlayAction::NextScene => {

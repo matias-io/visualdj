@@ -7,6 +7,7 @@ use onset_core::track::TrackMeta;
 
 use crate::artwork::{ArtworkLoader, placeholder};
 use crate::gpu::Gpu;
+use crate::overlay_options::CardOptions;
 use crate::quad::{QuadPipeline, QuadTexture, scrim_image};
 use crate::text::{TextItem, TextLayer, linear_to_srgb8};
 
@@ -100,12 +101,15 @@ pub struct CardFrame<'a> {
     pub time_s: f32,
     /// 0..1 pulse from the show director; the card grows a little with it.
     pub emphasis: f32,
+    pub options: &'a CardOptions,
 }
 
 pub struct Card {
     quads: QuadPipeline,
     loader: ArtworkLoader,
     scrim: QuadTexture,
+    /// The same gradient upside down, for a card at the top.
+    scrim_top: QuadTexture,
     current: Option<Slot>,
     previous: Option<Slot>,
     fade: FadeState,
@@ -116,16 +120,20 @@ fn smoothstep(t: f32) -> f32 {
     t * t * (3.0 - 2.0 * t)
 }
 
-/// "Album · 2024 · 11B · 120 BPM", skipping what is unknown.
-pub fn meta_line(meta: &TrackMeta, live_bpm: f32) -> String {
+/// "Album · 2024 · 11B · 120 BPM · House", skipping what is unknown or switched off.
+pub fn meta_line(meta: &TrackMeta, live_bpm: f32, o: &CardOptions) -> String {
     let mut parts: Vec<String> = Vec::new();
-    if !meta.album.is_empty() && meta.album != meta.title {
+    if o.album && !meta.album.is_empty() && meta.album != meta.title {
         parts.push(meta.album.clone());
     }
-    if let Some(y) = meta.year {
+    if o.year
+        && let Some(y) = meta.year
+    {
         parts.push(y.to_string());
     }
-    if let Some(k) = &meta.key {
+    if o.key
+        && let Some(k) = &meta.key
+    {
         parts.push(k.clone());
     }
     let bpm = if live_bpm > 0.0 {
@@ -133,8 +141,37 @@ pub fn meta_line(meta: &TrackMeta, live_bpm: f32) -> String {
     } else {
         meta.bpm
     };
-    if let Some(b) = bpm {
+    if o.bpm
+        && let Some(b) = bpm
+    {
         parts.push(format!("{b:.0} BPM"));
+    }
+    if o.genre
+        && let Some(g) = &meta.genre
+    {
+        parts.push(g.clone());
+    }
+    parts.join("  ·  ")
+}
+
+/// "Label · ★★★★☆ · Vocal, Peak Time · played 12×", from the DJ's rekordbox library.
+pub fn library_line(meta: &TrackMeta, o: &CardOptions) -> String {
+    let x = &meta.extra;
+    let mut parts: Vec<String> = Vec::new();
+    if o.label
+        && let Some(l) = &x.label
+    {
+        parts.push(l.clone());
+    }
+    if o.rating && x.rating > 0 {
+        let full = usize::from(x.rating.min(5));
+        parts.push(format!("{}{}", "★".repeat(full), "☆".repeat(5 - full)));
+    }
+    if o.tags && !x.my_tags.is_empty() {
+        parts.push(x.my_tags.iter().take(4).cloned().collect::<Vec<_>>().join(", "));
+    }
+    if o.play_count && x.play_count > 0 {
+        parts.push(format!("played {}×", x.play_count));
     }
     parts.join("  ·  ")
 }
@@ -143,10 +180,15 @@ impl Card {
     pub fn new(gpu: &Gpu, format: wgpu::TextureFormat) -> Self {
         let quads = QuadPipeline::new(gpu, format);
         let scrim = quads.upload(gpu, &scrim_image(0.85, 64));
+        let scrim_top = quads.upload(
+            gpu,
+            &image::imageops::flip_vertical(&scrim_image(0.85, 64)),
+        );
         Self {
             quads,
             loader: ArtworkLoader::new(),
             scrim,
+            scrim_top,
             current: None,
             previous: None,
             fade: FadeState::default(),
@@ -223,7 +265,10 @@ impl Card {
             live_bpm,
             time_s,
             emphasis,
+            options,
         } = frame;
+        let top = options.corner.is_top();
+        let right = options.corner.is_right();
         let (fade_new, fade_old) = self.fade.alphas(time_s);
         let alpha_new = if self.current.is_some() {
             fade_new
@@ -235,22 +280,36 @@ impl Card {
         } else {
             0.0
         };
-        let k = size.1 as f32 / DESIGN_HEIGHT * (1.0 + 0.15 * emphasis.clamp(0.0, 1.0));
+        let k = size.1 as f32 / DESIGN_HEIGHT
+            * options.size.clamp(0.5, 2.0)
+            * (1.0 + 0.15 * emphasis.clamp(0.0, 1.0));
         let (w, h) = (size.0 as f32, size.1 as f32);
 
         let scrim_h = SCRIM_HEIGHT * k;
-        self.scrim.place(
+        let scrim = if top { &self.scrim_top } else { &self.scrim };
+        scrim.place(
             gpu,
-            [0.0, h - scrim_h, w, scrim_h],
+            [0.0, if top { 0.0 } else { h - scrim_h }, w, scrim_h],
             size,
             alpha_new.max(alpha_old),
         );
-        let art_side = ART_SIDE * k;
-        let art_rect = [MARGIN * k, h - MARGIN * k - art_side, art_side, art_side];
-        let text_x = MARGIN * k + art_side + GAP * k;
-        let max_w = (w - text_x - MARGIN * k).max(64.0);
-        let bottom = h - MARGIN * k;
+        let art_side = if options.artwork { ART_SIDE * k } else { 0.0 };
+        let gap = if options.artwork { GAP * k } else { 0.0 };
+        let art_x = if right { w - MARGIN * k - art_side } else { MARGIN * k };
+        let art_y = if top { MARGIN * k } else { h - MARGIN * k - art_side };
+        let art_rect = [art_x, art_y, art_side, art_side];
+        // The text's edge next to the artwork: its left edge on the left, right edge on the right.
+        let text_edge = if right { art_x - gap } else { art_x + art_side + gap };
+        let max_w = (if right { text_edge - MARGIN * k } else { w - text_edge - MARGIN * k }).max(64.0);
         let text_rgb = theme[1];
+        let place = Placement {
+            edge: text_edge,
+            right,
+            top,
+            anchor: if top { MARGIN * k } else { h - MARGIN * k },
+            max_w,
+            k,
+        };
 
         let mut items = Vec::new();
         for (slot, alpha) in [
@@ -263,7 +322,7 @@ impl Card {
             }
             slot.art.place(gpu, art_rect, size, alpha);
             items.extend(layout_text(
-                text, &slot.meta, live_bpm, text_x, bottom, max_w, k, text_rgb, alpha,
+                text, &slot.meta, live_bpm, options, &place, text_rgb, alpha,
             ));
         }
 
@@ -280,35 +339,47 @@ impl Card {
             })],
             ..Default::default()
         });
-        self.quads.draw(&mut pass, &self.scrim);
-        if let Some(slot) = &self.previous
-            && alpha_old > 0.0
-        {
-            self.quads.draw(&mut pass, &slot.art);
-        }
-        if let Some(slot) = &self.current
-            && alpha_new > 0.0
-        {
-            self.quads.draw(&mut pass, &slot.art);
+        self.quads.draw(&mut pass, scrim);
+        if options.artwork {
+            if let Some(slot) = &self.previous
+                && alpha_old > 0.0
+            {
+                self.quads.draw(&mut pass, &slot.art);
+            }
+            if let Some(slot) = &self.current
+                && alpha_new > 0.0
+            {
+                self.quads.draw(&mut pass, &slot.art);
+            }
         }
         drop(pass);
         items
     }
 }
 
-/// Title, artist and metadata stacked upward from `bottom`, left-aligned at `x`.
-#[allow(clippy::too_many_arguments)]
+/// Where the card's text goes: the edge beside the artwork, which side it grows from, and
+/// the top or bottom line it stacks from.
+struct Placement {
+    edge: f32,
+    right: bool,
+    top: bool,
+    anchor: f32,
+    max_w: f32,
+    k: f32,
+}
+
+/// Title, artist and the detail lines, stacked away from the screen edge and aligned to the
+/// artwork.
 fn layout_text(
     text: &mut TextLayer,
     meta: &TrackMeta,
     live_bpm: f32,
-    x: f32,
-    bottom: f32,
-    max_w: f32,
-    k: f32,
+    options: &CardOptions,
+    at: &Placement,
     rgb: [f32; 3],
     alpha: f32,
 ) -> Vec<TextItem> {
+    let (k, max_w, x) = (at.k, at.max_w, at.edge);
     let title = TextItem::new(meta.title.as_str(), TITLE_PX * k, (x, 0.0))
         .weight(700)
         .color(linear_to_srgb8(rgb, alpha))
@@ -317,22 +388,44 @@ fn layout_text(
         .weight(500)
         .color(linear_to_srgb8(rgb, alpha * 0.92))
         .max_width(max_w);
-    let line = meta_line(meta, live_bpm);
-    let info = TextItem::new(line, META_PX * k, (x, 0.0))
-        .weight(400)
-        .color(linear_to_srgb8(rgb, alpha * 0.75))
-        .max_width(max_w);
+    let small = |line: String, a: f32| {
+        TextItem::new(line, META_PX * k, (x, 0.0))
+            .weight(400)
+            .color(linear_to_srgb8(rgb, alpha * a))
+            .max_width(max_w)
+    };
+    let info = small(meta_line(meta, live_bpm, options), 0.75);
+    let library = small(library_line(meta, options), 0.7);
+    let comment = small(
+        if options.comment {
+            meta.extra.comment.as_deref().unwrap_or("").chars().take(90).collect()
+        } else {
+            String::new()
+        },
+        0.6,
+    );
 
-    let mut stacked: Vec<TextItem> = Vec::with_capacity(3);
-    let mut y = bottom;
-    for mut item in [info, artist, title] {
-        if item.text.is_empty() {
-            continue;
+    // Top to bottom as read; stacked from the anchor away from the screen edge.
+    let mut order = vec![title, artist, info, library, comment];
+    order.retain(|i| !i.text.is_empty());
+    if !at.top {
+        order.reverse();
+    }
+    let mut stacked: Vec<TextItem> = Vec::with_capacity(order.len());
+    let mut y = at.anchor;
+    for mut item in order {
+        let (width, height) = text.measure(&item);
+        if at.right {
+            item.pos.0 = at.edge - width;
         }
-        let (_, height) = text.measure(&item);
-        y -= height;
-        item.pos.1 = y;
-        y -= LINE_GAP * k;
+        if at.top {
+            item.pos.1 = y;
+            y += height + LINE_GAP * k;
+        } else {
+            y -= height;
+            item.pos.1 = y;
+            y -= LINE_GAP * k;
+        }
         stacked.push(item);
     }
     stacked
@@ -359,17 +452,53 @@ mod tests {
             analysis_path: None,
             isrc: None,
             genre: None,
+            extra: onset_core::track::TrackExtra::default(),
         }
     }
 
     #[test]
     fn meta_line_skips_album_equal_to_title_and_unknowns() {
-        assert_eq!(meta_line(&meta(), 0.0), "2024  ·  11B  ·  120 BPM");
+        let o = CardOptions::default();
+        assert_eq!(meta_line(&meta(), 0.0, &o), "2024  ·  11B  ·  120 BPM");
         let mut m = meta();
         m.album = "Keinemusik Anthology".into();
         m.year = None;
         m.key = None;
-        assert_eq!(meta_line(&m, 126.4), "Keinemusik Anthology  ·  126 BPM");
+        assert_eq!(meta_line(&m, 126.4, &o), "Keinemusik Anthology  ·  126 BPM");
+    }
+
+    #[test]
+    fn meta_line_leaves_out_what_is_switched_off() {
+        let o = CardOptions {
+            key: false,
+            bpm: false,
+            genre: true,
+            ..CardOptions::default()
+        };
+        let mut m = meta();
+        m.genre = Some("House".into());
+        assert_eq!(meta_line(&m, 0.0, &o), "2024  ·  House");
+    }
+
+    #[test]
+    fn library_line_shows_rating_tags_and_plays() {
+        let mut m = meta();
+        m.extra.rating = 4;
+        m.extra.my_tags = vec!["Vocal".into(), "Peak Time".into()];
+        m.extra.play_count = 12;
+        m.extra.label = Some("Keinemusik".into());
+        let all = CardOptions {
+            label: true,
+            rating: true,
+            tags: true,
+            play_count: true,
+            ..CardOptions::default()
+        };
+        assert_eq!(
+            library_line(&m, &all),
+            "Keinemusik  ·  ★★★★☆  ·  Vocal, Peak Time  ·  played 12×"
+        );
+        assert_eq!(library_line(&m, &CardOptions::default()), "");
     }
 
     #[test]

@@ -11,6 +11,10 @@ struct Post {
     look: vec4<f32>,        // bloom strength, grain, vignette, chromatic aberration
     tone: vec4<f32>,        // exposure, seed, bloom threshold, blackout
     trans: vec4<f32>,       // transition progress 0..1, kind, emphasis, tension
+    build: vec4<f32>,       // build-up progress, beat count, phrase move (decaying), move direction (turns)
+    style: vec4<f32>,       // build-up strength, vocal level, -, -
+    accent: vec4<f32>,      // palette colour for the sweeps (linear rgb)
+    accent2: vec4<f32>,     // second palette colour
 };
 
 @group(0) @binding(0) var<uniform> post: Post;
@@ -176,13 +180,25 @@ fn fs_composite(in: VsOut) -> @location(0) vec4<f32> {
     let time = post.a.x;
     let glitch = post.motion.w;
 
-    // Camera: zoom punch about the centre, then shake.
-    var uv = (in.uv - vec2<f32>(0.5)) / (1.0 + post.motion.z) + vec2<f32>(0.5);
+    let aspect = post.res_texel.x * post.res_texel.w;
+    let build = clamp(post.build.x * post.style.x, 0.0, 1.0);
+    let beats = post.build.y;
+    let moving = clamp(post.build.z, 0.0, 1.0);
+    let move_dir = vec2<f32>(cos(post.build.w * 6.2831853), sin(post.build.w * 6.2831853));
+    // 0 -> 1 across the slide, eased; the push peaks halfway.
+    let move_t = 1.0 - moving;
+    let move_ease = move_t * move_t * (3.0 - 2.0 * move_t);
+
+    // Camera: zoom punch about the centre and a slow push in during a build-up, then the
+    // phrase slide, then shake.
+    let push = 1.0 + post.motion.z + 0.05 * build * build;
+    var uv = (in.uv - vec2<f32>(0.5)) / push + vec2<f32>(0.5);
+    uv = uv - move_dir * 0.035 * sin(move_ease * 3.14159265) * step(0.001, moving);
     uv = uv + post.motion.xy;
 
     // Glitch: horizontal slices jump sideways for a few frames.
     let slice = floor(uv.y * 48.0);
-    let tick = floor(time * 24.0);
+    let tick = floor(time * 12.0);
     let r = hash12(vec2<f32>(slice, tick));
     if (r < glitch * 0.35) {
         uv.x = uv.x + (hash12(vec2<f32>(tick, slice)) - 0.5) * 0.12 * glitch;
@@ -197,7 +213,7 @@ fn fs_composite(in: VsOut) -> @location(0) vec4<f32> {
         sa(uv - dir * ca).b,
     );
 
-    col = col + sb(uv) * post.look.x;
+    col = col + sb(uv) * post.look.x * (1.0 + 0.35 * post.style.y);
     col = col * post.tone.x;
     col = aces(col);
 
@@ -206,8 +222,32 @@ fn fs_composite(in: VsOut) -> @location(0) vec4<f32> {
     let inverted = clamp(hue_rotate(vec3<f32>(1.0) - col, 0.5), vec3<f32>(0.0), vec3<f32>(1.0));
     col = mix(col, inverted, clamp(post.a.z, 0.0, 1.0));
 
+    // Build-up: soft bars of light sweep diagonally across the screen, more of them and
+    // faster as the change nears, and the colours start to cycle. Nothing flashes.
+    let p = vec2<f32>((in.uv.x - 0.5) * aspect, in.uv.y - 0.5);
+    if (build > 0.001) {
+        let sweep_dir = normalize(vec2<f32>(0.8, 0.6));
+        let along = dot(p, sweep_dir);
+        let count = mix(0.8, 3.0, build);
+        let speed = mix(0.25, 1.0, build * build);
+        let phase = fract(along * count - beats * speed);
+        let bar = smoothstep(0.0, 0.12, phase) * (1.0 - smoothstep(0.12, 0.34, phase));
+        let tint = mix(post.accent.rgb, post.accent2.rgb, 0.5 + 0.5 * sin(beats * 1.5707963));
+        col = col + tint * bar * build * 0.28;
+        col = hue_rotate(col, build * build * 0.08 * sin(beats * 0.7853982));
+    }
+    // Phrase change: a band of light travels across the screen as the picture slides.
+    if (moving > 0.001) {
+        let front = mix(-1.3, 1.3, move_ease);
+        let d = dot(p, move_dir) - front;
+        let band = exp(-d * d * 40.0);
+        col = col + post.accent2.rgb * band * moving * 0.45;
+    }
+
     // Flash (tinted by the cue colour) and strobe.
-    col = col + post.flash_col.rgb * post.a.y * 0.85;
+    // Screen blend: bright parts stay bright, dark parts lift, nothing bleaches to white.
+    let flash = clamp(post.flash_col.rgb * post.a.y * 0.5, vec3<f32>(0.0), vec3<f32>(1.0));
+    col = vec3<f32>(1.0) - (vec3<f32>(1.0) - col) * (vec3<f32>(1.0) - flash);
     col = mix(col, vec3<f32>(1.0), post.flash_col.w * 0.9);
 
     // Vignette, darker as tension builds before a drop.

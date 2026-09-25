@@ -6,6 +6,7 @@ mod engine;
 mod launcher;
 mod monitors;
 mod overlay;
+mod thumbs;
 
 use std::path::PathBuf;
 use std::time::Duration;

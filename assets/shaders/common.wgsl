@@ -41,6 +41,7 @@ struct Frame {
     cue: vec4<f32>,             // colour of the last cue passed (rgb), cue_hit
     vibe: vec4<f32>,            // energy, darkness, rekordbox mood (0 none, 1 low, 2 mid, 3 high), history row (0..1)
     stems: vec4<f32>,           // rekordbox's analysis at the playhead: low, mid, high, vocal (0..1)
+    scene: vec4<f32>,           // the DJ's tweaks for this scene: speed, intensity, colour shift (turns), -
 };
 
 @group(0) @binding(0) var<uniform> frame: Frame;
@@ -90,7 +91,7 @@ fn spectrum(t: f32) -> f32 {
     return mix(lvl(i), lvl(min(i + 1u, 23u)), fract(x));
 }
 
-fn reactivity() -> f32 { return frame.fx2.y; }
+fn reactivity() -> f32 { return frame.fx2.y * frame.scene.y; }
 fn sub() -> f32 { return frame.groups.x * reactivity(); }
 fn bass() -> f32 { return frame.groups.y * reactivity(); }
 fn lowmid() -> f32 { return frame.groups.z * reactivity(); }
@@ -139,7 +140,7 @@ fn beat_pulse(phase: f32, sharpness: f32) -> f32 {
 // A time that runs with the music: seconds while stopped, beats (scaled) while playing, so
 // motion locks to the tempo and speeds up with the pitch fader.
 fn music_time() -> f32 {
-    return select(frame.time * 0.5, beat_count() * 0.5, frame.playing > 0.5 && frame.bpm > 1.0);
+    return select(frame.time * 0.5, beat_count() * 0.5, frame.playing > 0.5 && frame.bpm > 1.0) * frame.scene.x;
 }
 
 // ---------------------------------------------------------------- textures
@@ -190,7 +191,7 @@ fn hsv(h: f32, s: f32, v: f32) -> vec3<f32> {
 
 // A colour from the track's palette: t cycles through the three accents smoothly.
 fn palette(t: f32) -> vec3<f32> {
-    let x = fract(t) * 3.0;
+    let x = fract(t + frame.scene.z) * 3.0;
     let a = theme(2u);
     let b = theme(3u);
     let c = theme(4u);

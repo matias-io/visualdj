@@ -36,6 +36,7 @@ fn track() -> TrackMeta {
         analysis_path: None,
         isrc: None,
         genre: Some("Techno".into()),
+        extra: onset_core::track::TrackExtra::default(),
     }
 }
 

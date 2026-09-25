@@ -56,6 +56,8 @@ pub struct FrameUniforms {
     pub vibe: [f32; 4],
     /// rekordbox's analysis at the playhead: low, mid, high, vocal (0..1).
     pub stems: [f32; 4],
+    /// The active scene's tweaks: speed, intensity, colour shift (turns), unused.
+    pub scene: [f32; 4],
 }
 
 /// Everything the uniforms carry beyond the music state: the show director's effects, the
@@ -72,6 +74,8 @@ pub struct FrameExtras {
     pub history_row: f32,
     /// The palette to use instead of the state's (from the cover art).
     pub theme: Option<[[f32; 3]; 5]>,
+    /// The active scene's speed, intensity and colour shift.
+    pub tweak: onset_core::show::SceneTweak,
 }
 
 impl Default for FrameExtras {
@@ -87,6 +91,7 @@ impl Default for FrameExtras {
             quality: 2.0,
             history_row: 0.0,
             theme: None,
+            tweak: onset_core::show::SceneTweak::default(),
         }
     }
 }
@@ -180,6 +185,7 @@ impl FrameUniforms {
             ],
             vibe: [x.vibe.energy, x.vibe.darkness, mood, x.history_row],
             stems: [ms.analysis.low, ms.analysis.mid, ms.analysis.high, ms.analysis.vocal],
+            scene: [x.tweak.speed, x.tweak.intensity, x.tweak.hue, 0.0],
         }
     }
 }

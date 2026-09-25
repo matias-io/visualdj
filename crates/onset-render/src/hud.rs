@@ -5,6 +5,7 @@ use std::collections::VecDeque;
 use onset_core::music_state::MusicState;
 use onset_core::phrase::PhraseKind;
 
+use crate::overlay_options::HudOptions;
 use crate::text::TextItem;
 
 /// Frames kept for the percentile.
@@ -92,8 +93,17 @@ impl Hud {
         sorted[idx]
     }
 
-    /// The lines to draw, in physical pixels; `scale` is the window's DPI factor.
-    pub fn items(&self, ms: &MusicState, info: &HudInfo, scale: f32) -> Vec<TextItem> {
+    /// The lines to draw, in physical pixels; `scale` is the window's DPI factor. `o` picks
+    /// which pieces appear; a line with nothing left in it is dropped.
+    #[allow(clippy::too_many_lines)] // one readout, piece by piece
+    pub fn items(
+        &self,
+        ms: &MusicState,
+        info: &HudInfo,
+        scale: f32,
+        o: &HudOptions,
+    ) -> Vec<TextItem> {
+        let scale = scale * o.size.clamp(0.5, 2.5);
         let px = LINE_PX * scale;
         let gpu = info
             .gpu_ms
@@ -113,33 +123,75 @@ impl Hud {
             .drop_countdown_beats
             .map_or_else(|| "-".to_string(), |b| format!("{b} beats"));
 
-        let mut lines = vec![
-            format!(
-                "Onset  ·  {}  ·  {}x{}",
-                info.scene, info.size.0, info.size.1
-            ),
-            format!(
-                "frame {:.1} ms  ·  p99 {:.1} ms  ·  cpu {:.2} ms{gpu}",
-                self.last_frame_ms(),
-                self.p99_ms(),
-                self.cpu_ms
-            ),
-            format!(
-                "{}  ·  {transport}  ·  {:.1} BPM  ·  {}",
-                if info.source.is_empty() {
-                    "-"
+        let join = |parts: Vec<String>| {
+            parts
+                .into_iter()
+                .filter(|p| !p.is_empty())
+                .collect::<Vec<_>>()
+                .join("  ·  ")
+        };
+        let on = |cond: bool, s: String| if cond { s } else { String::new() };
+        let key = ms
+            .track
+            .as_ref()
+            .and_then(|t| t.key.clone())
+            .unwrap_or_else(|| "-".to_string());
+        let cue = ms.next_cue.map_or_else(
+            || "next cue -".to_string(),
+            |c| {
+                let name = if c.slot == 0 {
+                    "memory cue".to_string()
                 } else {
-                    info.source.as_str()
-                },
-                ms.bpm,
-                mmss(ms.playhead_s)
+                    format!("cue {}", char::from(b'A' + (c.slot - 1).min(7)))
+                };
+                format!("{name} in {:.1} s", c.seconds)
+            },
+        );
+        let a = &ms.analysis;
+        let mut lines = vec![
+            on(
+                o.scene,
+                format!("Onset  ·  {}  ·  {}x{}", info.scene, info.size.0, info.size.1),
             ),
-            format!(
-                "phrase {}  ·  next {next}  ·  drop {drop}  ·  intensity {:.2}",
-                phrase_name(ms.phrase),
-                ms.intensity
+            on(
+                o.performance,
+                format!(
+                    "frame {:.1} ms  ·  p99 {:.1} ms  ·  cpu {:.2} ms{gpu}",
+                    self.last_frame_ms(),
+                    self.p99_ms(),
+                    self.cpu_ms
+                ),
+            ),
+            join(vec![
+                on(
+                    o.transport,
+                    if info.source.is_empty() {
+                        "-".to_string()
+                    } else {
+                        info.source.clone()
+                    },
+                ),
+                on(o.transport, transport),
+                on(o.tempo, format!("{:.1} BPM", ms.bpm)),
+                on(o.key, key),
+                on(o.transport, mmss(ms.playhead_s)),
+            ]),
+            join(vec![
+                on(o.phrase, format!("phrase {}", phrase_name(ms.phrase))),
+                on(o.phrase, format!("next {next}")),
+                on(o.drop, format!("drop {drop}")),
+                on(o.phrase, format!("intensity {:.2}", ms.intensity)),
+            ]),
+            on(o.next_cue, cue),
+            on(
+                o.analysis,
+                format!(
+                    "low {:.2}  ·  mid {:.2}  ·  high {:.2}  ·  vocal {:.2}  ·  kick {:.2}  ·  hats {:.2}",
+                    a.low, a.mid, a.high, a.vocal, ms.audio.kick, ms.audio.hat
+                ),
             ),
         ];
+        lines.retain(|l| !l.is_empty());
         if let Some(err) = &info.last_error {
             lines.push(err.lines().next().unwrap_or(err).to_string());
         }
@@ -194,15 +246,41 @@ mod tests {
     }
 
     #[test]
+    fn switched_off_pieces_leave_the_readout() {
+        let hud = Hud::new();
+        let ms = MusicState::default();
+        let all = hud.items(&ms, &HudInfo::default(), 1.0, &HudOptions::default());
+        let few = HudOptions {
+            performance: false,
+            scene: false,
+            ..HudOptions::default()
+        };
+        let less = hud.items(&ms, &HudInfo::default(), 1.0, &few);
+        assert_eq!(less.len() + 4, all.len(), "two lines (each with a shadow) gone");
+        assert!(less.iter().all(|i| !i.text.contains("frame")));
+        let tempo_only = HudOptions {
+            scene: false,
+            performance: false,
+            transport: false,
+            phrase: false,
+            drop: false,
+            ..HudOptions::default()
+        };
+        let t = hud.items(&ms, &HudInfo::default(), 1.0, &tempo_only);
+        assert_eq!(t.len(), 2);
+        assert!(t[1].text.contains("BPM"), "{}", t[1].text);
+    }
+
+    #[test]
     fn items_include_the_error_line_when_present() {
         let hud = Hud::new();
         let ms = MusicState::default();
-        let plain = hud.items(&ms, &HudInfo::default(), 1.0);
+        let plain = hud.items(&ms, &HudInfo::default(), 1.0, &HudOptions::default());
         let info = HudInfo {
             last_error: Some("shader `ring` failed to compile: x\nmore".into()),
             ..HudInfo::default()
         };
-        let with = hud.items(&ms, &info, 1.0);
+        let with = hud.items(&ms, &info, 1.0, &HudOptions::default());
         assert_eq!(with.len(), plain.len() + 2);
         assert!(with.last().unwrap().text.starts_with("shader `ring`"));
         assert!(!with.last().unwrap().text.contains("more"));
