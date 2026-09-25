@@ -530,9 +530,14 @@ impl Running {
                 ..Default::default()
             },
         };
+        let analysis_now = current
+            .analysis
+            .as_ref()
+            .and_then(|a| a.bands.as_ref())
+            .map(|b| b.at(playhead));
         let intensity = self.director.update(&st, dt);
         let audio = self.audio(now);
-        MusicState::assemble(
+        let mut ms = MusicState::assemble(
             time_s,
             playhead,
             self.clock.is_playing(),
@@ -541,7 +546,11 @@ impl Running {
             audio,
             intensity,
             Some(meta),
-        )
+        );
+        if let Some(at) = analysis_now {
+            ms.analysis = at;
+        }
+        ms
     }
 
     fn run(

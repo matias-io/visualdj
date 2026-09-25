@@ -50,6 +50,8 @@ pub struct MusicState {
     pub next_cue: Option<CueAhead>,
     /// Background, text, accent 1..3 as linear RGB.
     pub theme: [[f32; 3]; 5],
+    /// rekordbox's own analysis at the playhead: 3-band waveform and vocal level.
+    pub analysis: crate::bands::BandsAt,
 }
 
 impl Default for MusicState {
@@ -74,6 +76,7 @@ impl Default for MusicState {
             mood: None,
             next_cue: None,
             theme: DEFAULT_THEME,
+            analysis: crate::bands::BandsAt::default(),
         }
     }
 }
@@ -126,6 +129,7 @@ impl MusicState {
                 color: c.color,
             }),
             theme: DEFAULT_THEME,
+            analysis: crate::bands::BandsAt::default(),
         }
     }
 }

@@ -54,6 +54,8 @@ pub struct FrameUniforms {
     pub cue: [f32; 4],
     /// Energy, darkness, mood code, history row.
     pub vibe: [f32; 4],
+    /// rekordbox's analysis at the playhead: low, mid, high, vocal (0..1).
+    pub stems: [f32; 4],
 }
 
 /// Everything the uniforms carry beyond the music state: the show director's effects, the
@@ -177,6 +179,7 @@ impl FrameUniforms {
                 fx.cue_hit,
             ],
             vibe: [x.vibe.energy, x.vibe.darkness, mood, x.history_row],
+            stems: [ms.analysis.low, ms.analysis.mid, ms.analysis.high, ms.analysis.vocal],
         }
     }
 }

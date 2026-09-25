@@ -3,6 +3,7 @@
 #![forbid(unsafe_code)]
 
 pub mod audio_features;
+pub mod bands;
 pub mod clock;
 pub mod director;
 pub mod grid;

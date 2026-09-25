@@ -40,6 +40,7 @@ struct Frame {
     fx2: vec4<f32>,             // hue shift (turns), reactivity (0..2), trails (0..1), quality (0 low .. 3 ultra)
     cue: vec4<f32>,             // colour of the last cue passed (rgb), cue_hit
     vibe: vec4<f32>,            // energy, darkness, rekordbox mood (0 none, 1 low, 2 mid, 3 high), history row (0..1)
+    stems: vec4<f32>,           // rekordbox's analysis at the playhead: low, mid, high, vocal (0..1)
 };
 
 @group(0) @binding(0) var<uniform> frame: Frame;
@@ -101,6 +102,13 @@ fn brightness() -> f32 { return frame.groups2.w; }
 fn kick() -> f32 { return frame.hits.x * reactivity(); }
 fn snare() -> f32 { return frame.hits.y * reactivity(); }
 fn hat() -> f32 { return frame.hits.z * reactivity(); }
+// rekordbox's own analysis of the loaded track at the playhead (no audio latency):
+// the 3-band waveform and the vocal detection. `vocal()` is gated by the live mids, so a
+// vocal the DJ has cut with the stems or EQ fades out.
+fn track_low() -> f32 { return frame.stems.x * reactivity(); }
+fn track_mid() -> f32 { return frame.stems.y * reactivity(); }
+fn track_high() -> f32 { return frame.stems.z * reactivity(); }
+fn vocal() -> f32 { return frame.stems.w * smoothstep(0.05, 0.35, frame.groups.w) * reactivity(); }
 
 // ---------------------------------------------------------------- show
 
