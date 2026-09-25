@@ -327,12 +327,14 @@ impl ShowDirector {
                     fx.drop_hit = 1.0;
                     fx.emphasis = fx.emphasis.max(0.6 * s.emphasis);
                     fx.glitch = fx.glitch.max(0.3 * s.glitch);
-                    self.hue_target += 0.5 * s.colour;
+                    // A clear but tasteful swing; the palette stays the track's own.
+                    let sign = if self.rng.chance(0.5) { 1.0 } else { -1.0 };
+                    self.hue_target += sign * (0.12 + 0.1 * self.rng.unit()) * s.colour;
                     self.shake_burst = self.shake_burst.max(s.shake);
                     self.zoom_burst = self.zoom_burst.max(0.12 * s.reactivity);
                     if self.rng.chance(s.inversions) {
                         self.invert_target = 1.0;
-                        self.invert_hold_s = beat_s * 4.0;
+                        self.invert_hold_s = beat_s;
                     }
                 }
                 ShowEvent::Breakdown => {
@@ -376,7 +378,7 @@ impl ShowDirector {
                         && self.rng.chance(0.06 * s.chaos * s.inversions)
                     {
                         self.invert_target = 1.0;
-                        self.invert_hold_s = beat_s * 2.0;
+                        self.invert_hold_s = beat_s * 0.5;
                     }
                     if self.rng.chance(0.05 * s.chaos) {
                         fx.glitch = fx.glitch.max(0.5 * s.glitch);

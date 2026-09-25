@@ -6,7 +6,7 @@ use crate::gpu::Gpu;
 use crate::scene::{FullscreenScene, Scene, ShaderError};
 
 /// File stems under `assets/shaders/`, in menu order.
-pub const BUILTIN_SCENE_NAMES: &[&str] = &["pulse", "ring", "warp", "voronoi"];
+pub const BUILTIN_SCENE_NAMES: &[&str] = &["tunnel", "synthwave", "ribbons", "kaleido", "lasers", "nebula", "crystal", "liquid", "cover", "pulse", "ring", "warp", "voronoi"];
 
 /// What a scene is, for the launcher and Auto mode.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -153,6 +153,42 @@ pub fn scene_info(name: &str) -> Option<&'static SceneInfo> {
 /// The shipped sources, compiled into the binary so a missing or broken file on disk never
 /// takes a scene away from the output.
 pub const EMBEDDED_SCENES: &[(&str, &str)] = &[
+    (
+        "tunnel",
+        include_str!("../../../../assets/shaders/tunnel.wgsl"),
+    ),
+    (
+        "synthwave",
+        include_str!("../../../../assets/shaders/synthwave.wgsl"),
+    ),
+    (
+        "ribbons",
+        include_str!("../../../../assets/shaders/ribbons.wgsl"),
+    ),
+    (
+        "kaleido",
+        include_str!("../../../../assets/shaders/kaleido.wgsl"),
+    ),
+    (
+        "lasers",
+        include_str!("../../../../assets/shaders/lasers.wgsl"),
+    ),
+    (
+        "nebula",
+        include_str!("../../../../assets/shaders/nebula.wgsl"),
+    ),
+    (
+        "crystal",
+        include_str!("../../../../assets/shaders/crystal.wgsl"),
+    ),
+    (
+        "liquid",
+        include_str!("../../../../assets/shaders/liquid.wgsl"),
+    ),
+    (
+        "cover",
+        include_str!("../../../../assets/shaders/cover.wgsl"),
+    ),
     (
         "pulse",
         include_str!("../../../../assets/shaders/pulse.wgsl"),

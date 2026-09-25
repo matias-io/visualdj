@@ -1,7 +1,13 @@
 //! Render to an offscreen texture and read the pixels back. Used by tests and screenshots.
 use crate::gpu::Gpu;
 
+static GPU_TESTS: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 pub struct Headless {
+    /// Held for the fixture's lifetime: software adapters crash when several threads
+    /// create and use devices at once, so GPU tests in one binary run one at a time.
+    #[allow(dead_code)] // held, never read
+    serial: Option<std::sync::MutexGuard<'static, ()>>,
     pub gpu: Gpu,
     pub size: (u32, u32),
     pub format: wgpu::TextureFormat,
@@ -17,14 +23,18 @@ fn padded_bytes_per_row(width: u32) -> u32 {
 
 impl Headless {
     pub fn new(size: (u32, u32), prefer_software: bool) -> anyhow::Result<Self> {
+        let serial = GPU_TESTS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let gpu = Gpu::new_headless(prefer_software)?;
-        Ok(Self::with_gpu(gpu, size))
+        let mut h = Self::with_gpu(gpu, size);
+        h.serial = Some(serial);
+        Ok(h)
     }
 
     pub fn with_gpu(gpu: Gpu, size: (u32, u32)) -> Self {
         let format = wgpu::TextureFormat::Rgba8UnormSrgb;
         let texture = target_texture(&gpu, size, format);
         Self {
+            serial: None,
             gpu,
             size,
             format,

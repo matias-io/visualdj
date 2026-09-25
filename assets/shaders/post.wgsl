@@ -121,7 +121,7 @@ fn fs_bright(in: VsOut) -> @location(0) vec4<f32> {
     let br = max(c.r, max(c.g, c.b));
     let soft = clamp(br - threshold + knee, 0.0, 2.0 * knee);
     let contrib = max(soft * soft / (4.0 * knee + 1e-4), br - threshold) / max(br, 1e-4);
-    return vec4<f32>(min(c * max(contrib, 0.0), vec3<f32>(64.0)), 1.0);
+    return vec4<f32>(min(c * max(contrib, 0.0), vec3<f32>(8.0)), 1.0);
 }
 
 // Dual-filter (Kawase) downsample.
@@ -202,7 +202,9 @@ fn fs_composite(in: VsOut) -> @location(0) vec4<f32> {
     col = aces(col);
 
     col = clamp(hue_rotate(col, post.a.w), vec3<f32>(0.0), vec3<f32>(1.0));
-    col = mix(col, vec3<f32>(1.0) - col, clamp(post.a.z, 0.0, 1.0));
+    // Inversion that keeps hues: the picture's light becomes its dark, colours stay put.
+    let inverted = clamp(hue_rotate(vec3<f32>(1.0) - col, 0.5), vec3<f32>(0.0), vec3<f32>(1.0));
+    col = mix(col, inverted, clamp(post.a.z, 0.0, 1.0));
 
     // Flash (tinted by the cue colour) and strobe.
     col = col + post.flash_col.rgb * post.a.y * 0.85;

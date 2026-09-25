@@ -593,7 +593,13 @@ impl Renderer {
             .map(|t| started.duration_since(t).as_secs_f32() * 1000.0);
         self.last_frame = Some(started);
         self.hud.record(interval_ms, self.last_cpu_ms);
-        let dt = interval_ms.map_or(1.0 / 60.0, |ms| (ms / 1000.0).clamp(0.0, 0.1));
+        // Effects advance with the clock the caller gives (the app's wall time, a test's
+        // synthetic time), not with how fast frames happen to be rendered.
+        let dt = if self.frame_index == 0 {
+            1.0 / 60.0
+        } else {
+            (time_s - self.frame_clock).clamp(0.0, 0.1)
+        };
         self.frame_clock = time_s;
 
         // The show: events, effects, and in Auto mode the next scene.
