@@ -104,26 +104,31 @@ Developer CLI (`cargo run -p onset-cli -- <command>`):
 
 ## Connecting to rekordbox
 
-Onset reads rekordbox's live state (master deck, position, tempo, loaded track) from the
+Onset reads rekordbox's live state (deck positions, and which deck is playing) from the
 rekordbox process. Where those values live changes with every rekordbox release, so each
-version needs a one-time calibration that writes `offsets\<version>.toml`. Until that file
-exists the HUD says `no offsets for rekordbox 7.2.18` and Onset idles.
+version needs a one-time calibration that writes `offsets\<version>.toml`. rekordbox 7.2.18
+ships calibrated (`offsets.2.18.toml`). For another version the HUD says
+`no offsets for rekordbox <version>` and Onset idles until you calibrate.
 
 Calibrate with rekordbox open in Performance mode and the decks to yourself:
 
 ```bash
-target\release\onset-cli.exe calibrate
+targetelease\onset-cli.exe calibrate
 ```
 
-It walks through five steps and waits for Enter after each: play a track on deck 1 as
-MASTER; load a different track on deck 1 and play it; stop deck 1 and play deck 2; press
-MASTER on deck 2; press MASTER on deck 1. It asks for the titles and the BPM shown, keeps
-only the memory paths that followed each change, and writes the offsets file. `--auto`
-does the same without the keyboard: it announces each step, waits (`--step-seconds`, default
-30) and works the titles and tempo out itself.
+It announces each step and watches rekordbox's memory until it sees you do it, so there is
+nothing to type. The steps: play a track on deck 1 as MASTER; pause it; play it again;
+load a different track on deck 1 and play it; stop deck 1 and wait a moment; load a track on
+deck 2 and play it; pause it; play it again; press MASTER on deck 2; press MASTER on deck 1.
+Each pause-and-play tells the calibrator which counters are the real playhead (the ones that
+stop and resume) rather than clocks that keep running. The whole run takes ten to fifteen
+minutes, most of it scanning. A step that is not seen within `--step-seconds` (default 180)
+is skipped and the later checks decide whether the result holds.
 
 Then start Onset normally. Nothing is written to rekordbox; the reader opens the process
-with read-only access.
+with read-only access. Without a master-deck chain (7.2.18 has none yet) the show follows
+the deck that is playing, and during a transition it stays on the outgoing deck until that
+deck stops.
 
 ## Writing a scene
 
@@ -142,9 +147,8 @@ machine it reads:
 
 - the rekordbox library database (`master.db`) and analysis files (beat grids, phrases, cues,
   waveforms) that rekordbox writes to the user's profile;
-- rekordbox's process memory, to learn which deck is master and where the playhead is
-  (planned; the pointer offsets are specific to each rekordbox version and are calibrated
-  locally);
+- rekordbox's process memory, to learn which deck is playing and where its playhead is
+  (the pointer offsets are specific to each rekordbox version and are calibrated locally);
 - the master mix, via rekordbox's PC MASTER OUT setting and a WASAPI loopback capture.
 
 Nothing is written to rekordbox's files or memory.

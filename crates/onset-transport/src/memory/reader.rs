@@ -134,6 +134,8 @@ pub struct ChainReader<M: Mem> {
     offsets: Offsets,
     /// Sample rate of the loaded track, used when the offsets count file samples.
     track_rate_hz: Option<f64>,
+    /// Analysed tempo of the loaded track, for decks without a readable tempo field.
+    track_bpm: Option<f32>,
 }
 
 impl<M: Mem> ChainReader<M> {
@@ -142,11 +144,20 @@ impl<M: Mem> ChainReader<M> {
             mem,
             offsets,
             track_rate_hz: None,
+            track_bpm: None,
         }
     }
 
     pub fn set_track_sample_rate(&mut self, hz: Option<u32>) {
         self.track_rate_hz = hz.map(f64::from);
+    }
+
+    pub fn set_track_bpm(&mut self, bpm: Option<f32>) {
+        self.track_bpm = bpm;
+    }
+
+    pub fn track_bpm(&self) -> Option<f32> {
+        self.track_bpm
     }
 
     /// Units per second for the position: the offsets' fixed rate, else the track's.
@@ -171,7 +182,8 @@ impl<M: Mem> ChainReader<M> {
     }
 
     pub fn master_deck(&self) -> Option<u8> {
-        let addr = resolve_chain(&self.mem, &self.offsets.master_deck)?;
+        let chain = self.offsets.master_deck.as_ref()?;
+        let addr = resolve_chain(&self.mem, chain)?;
         let v = self.mem.read_u8(addr).ok()?;
         (usize::from(v) < self.offsets.decks.len().max(1)).then_some(v)
     }
@@ -198,7 +210,10 @@ impl<M: Mem> ChainReader<M> {
     /// Deck `index`, or `None` when its chains do not resolve (mid-load, no track).
     pub fn deck(&self, index: usize) -> Option<DeckState> {
         let d = self.offsets.decks.get(index)?;
-        let bpm = self.mem.read_f32(resolve_chain(&self.mem, &d.bpm)?).ok()?;
+        let bpm = match &d.bpm {
+            Some(chain) => self.mem.read_f32(resolve_chain(&self.mem, chain)?).ok()?,
+            None => 0.0,
+        };
         let pos_addr = resolve_chain(&self.mem, &d.position)?;
         let raw = match self.offsets.position_format {
             PositionFormat::I64 => self.mem.read_i64(pos_addr).ok()? as f64,
@@ -242,18 +257,56 @@ pub fn parse_track_info(text: &str) -> TrackRef {
     }
 }
 
-/// Decides "playing" from position movement, since rekordbox exposes no play flag we read.
+/// Which deck the show follows when more than one is loaded. The master deck wins while it
+/// plays; otherwise the deck that is playing, and during a transition (both playing) the
+/// one already being followed, so the visuals switch when the outgoing deck stops rather
+/// than the moment the incoming one starts.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct DeckChooser {
+    current: Option<usize>,
+}
+
+impl DeckChooser {
+    /// `decks[i]` is `None` for a deck without a readable track, else whether it plays.
+    pub fn choose(&mut self, master: Option<usize>, decks: &[Option<bool>]) -> Option<usize> {
+        let loaded = |i: usize| decks.get(i).is_some_and(Option::is_some);
+        let playing = |i: usize| decks.get(i).copied().flatten().unwrap_or(false);
+        let any_playing = decks.contains(&Some(true));
+        let master = master.filter(|m| loaded(*m));
+        let pick = match master {
+            Some(m) if playing(m) || !any_playing => Some(m),
+            _ => self
+                .current
+                .filter(|c| playing(*c))
+                .or_else(|| (0..decks.len()).find(|i| playing(*i)))
+                .or_else(|| self.current.filter(|c| loaded(*c)))
+                .or(master)
+                .or_else(|| (0..decks.len()).find(|i| loaded(*i))),
+        };
+        self.current = pick;
+        pick
+    }
+}
+
+/// Decides "playing" from position movement, since rekordbox exposes no play flag we read,
+/// and measures the playback rate (1.0 = nominal pitch) from how fast the position moves.
 /// A position that has not changed for [`PlayTracker::GRACE`] counts as paused.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct PlayTracker {
     last_position: Option<f64>,
     last_movement: Option<Instant>,
+    /// Position and time of the last rate measurement.
+    rate_anchor: Option<(f64, Instant)>,
+    rate: Option<f64>,
 }
 
 impl PlayTracker {
     /// Longest gap between position changes still considered playing (covers 120 Hz reads
     /// landing between audio callbacks).
     pub const GRACE: Duration = Duration::from_millis(250);
+
+    /// Rate measurements span at least this long, so read jitter averages out.
+    pub const RATE_WINDOW: Duration = Duration::from_millis(500);
 
     pub fn update(&mut self, position_s: f64, now: Instant) -> bool {
         let moved = self
@@ -263,30 +316,61 @@ impl PlayTracker {
         if moved {
             self.last_movement = Some(now);
         }
-        self.last_movement
-            .is_some_and(|t| now.duration_since(t) <= Self::GRACE)
+        let playing = self
+            .last_movement
+            .is_some_and(|t| now.duration_since(t) <= Self::GRACE);
+        match self.rate_anchor {
+            Some((p0, t0)) if now.duration_since(t0) >= Self::RATE_WINDOW => {
+                let dt = now.duration_since(t0).as_secs_f64();
+                let r = (position_s - p0) / dt;
+                // A jump (cue, loop, seek) is not a rate; keep the previous estimate.
+                if playing && (0.5..=1.5).contains(&r) {
+                    self.rate = Some(self.rate.map_or(r, |old| old + 0.3 * (r - old)));
+                }
+                self.rate_anchor = Some((position_s, now));
+            }
+            Some(_) => {}
+            None => self.rate_anchor = Some((position_s, now)),
+        }
+        if !playing {
+            self.rate_anchor = None;
+        }
+        playing
+    }
+
+    /// Measured playback rate, once half a second of movement has been seen.
+    pub fn rate(&self) -> Option<f64> {
+        self.rate
     }
 }
 
-/// Builds the snapshot the engine consumes from the master deck's state.
+/// Builds the snapshot the engine consumes from the master deck's state. With no tempo
+/// field, `track_bpm` (from the library) times the measured `rate` gives the playing tempo.
 pub fn snapshot_from_deck(
     deck: u8,
     state: &DeckState,
     playing: bool,
     now: Instant,
+    track_bpm: Option<f32>,
+    rate: Option<f64>,
 ) -> TransportSnapshot {
     let track = match (&state.anlz_path, &state.track_info) {
         (Some(path), _) if path.contains("ANLZ") => TrackRef::AnalysisPath(path.clone()),
         (_, Some(info)) => parse_track_info(info),
         _ => TrackRef::Unknown,
     };
+    let (bpm_now, bpm_original) = if state.bpm > 0.0 {
+        (state.bpm, track_bpm.unwrap_or(state.bpm))
+    } else {
+        let original = track_bpm.unwrap_or(0.0);
+        (original * rate.unwrap_or(1.0) as f32, original)
+    };
     TransportSnapshot {
         deck,
         track,
         playhead_s: state.position_s,
-        bpm_now: state.bpm,
-        // The analysed tempo is not in memory; the engine fills it in from the library.
-        bpm_original: state.bpm,
+        bpm_now,
+        bpm_original,
         playing,
         read_at: now,
     }
@@ -304,7 +388,7 @@ mod live {
 
     use super::super::REKORDBOX_EXE;
     use super::super::process::Process;
-    use super::{ChainReader, Mem, PlayTracker, snapshot_from_deck};
+    use super::{ChainReader, DeckChooser, DeckState, Mem, PlayTracker, snapshot_from_deck};
     use crate::memory::offsets::Offsets;
     use crate::source::{SourceStatus, TransportSource};
 
@@ -328,7 +412,9 @@ mod live {
         },
         Connected {
             reader: Box<ChainReader<Process>>,
-            tracker: PlayTracker,
+            /// One per configured deck.
+            trackers: Vec<PlayTracker>,
+            chooser: DeckChooser,
             failures: u32,
         },
     }
@@ -364,9 +450,11 @@ mod live {
             let version = process.file_version().unwrap_or_else(|| "unknown".into());
             if let Some(offsets) = Offsets::for_version(&self.offsets_dir, &version) {
                 tracing::info!(pid = process.pid, %version, "rekordbox connected");
+                let trackers = vec![PlayTracker::default(); offsets.decks.len()];
                 self.state = State::Connected {
                     reader: Box::new(ChainReader::new(process, offsets)),
-                    tracker: PlayTracker::default(),
+                    trackers,
+                    chooser: DeckChooser::default(),
                     failures: 0,
                 };
             } else {
@@ -400,6 +488,12 @@ mod live {
             }
         }
 
+        fn set_track_bpm(&mut self, bpm: Option<f32>) {
+            if let State::Connected { reader, .. } = &mut self.state {
+                reader.set_track_bpm(bpm);
+            }
+        }
+
         fn poll(&mut self) -> Option<TransportSnapshot> {
             let now = Instant::now();
             match &mut self.state {
@@ -411,15 +505,30 @@ mod live {
                 }
                 State::Connected {
                     reader,
-                    tracker,
+                    trackers,
+                    chooser,
                     failures,
                 } => {
-                    let master = reader.master_deck();
-                    let deck = master.and_then(|m| reader.deck(usize::from(m)).map(|d| (m, d)));
-                    if let Some((m, state)) = deck {
+                    let states: Vec<Option<DeckState>> =
+                        (0..trackers.len()).map(|i| reader.deck(i)).collect();
+                    let playing: Vec<Option<bool>> = states
+                        .iter()
+                        .zip(trackers.iter_mut())
+                        .map(|(s, t)| s.as_ref().map(|s| t.update(s.position_s, now)))
+                        .collect();
+                    let master = reader.master_deck().map(usize::from);
+                    if let Some(i) = chooser.choose(master, &playing)
+                        && let Some(state) = &states[i]
+                    {
                         *failures = 0;
-                        let playing = tracker.update(state.position_s, now);
-                        return Some(snapshot_from_deck(m, &state, playing, now));
+                        return Some(snapshot_from_deck(
+                            u8::try_from(i).unwrap_or(0),
+                            state,
+                            playing[i].unwrap_or(false),
+                            now,
+                            reader.track_bpm(),
+                            trackers[i].rate(),
+                        ));
                     }
                     *failures += 1;
                     if *failures >= MAX_FAILURES

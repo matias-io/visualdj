@@ -5,7 +5,9 @@ use std::time::{Duration, Instant};
 use onset_core::transport::TrackRef;
 use onset_transport::memory::chain::Chain;
 use onset_transport::memory::offsets::{DeckChains, Offsets, PositionFormat};
-use onset_transport::memory::reader::{ChainReader, FakeMem, PlayTracker, parse_track_info};
+use onset_transport::memory::reader::{
+    ChainReader, DeckChooser, FakeMem, PlayTracker, parse_track_info,
+};
 
 const BASE: u64 = 0x1000_0000;
 
@@ -47,16 +49,16 @@ fn fake_rekordbox() -> (FakeMem, Offsets) {
         platform: "windows".into(),
         position_format: PositionFormat::I64,
         position_rate_hz: 44_100.0,
-        master_deck: chain(0x110, &[0x0, 0x0]),
+        master_deck: Some(chain(0x110, &[0x0, 0x0])),
         decks: vec![
             DeckChains {
-                bpm: chain(0x100, &[0x0, 0x20]),
+                bpm: Some(chain(0x100, &[0x0, 0x20])),
                 position: chain(0x100, &[0x0, 0x28]),
                 track_info: Some(chain(0x108, &[0x0])),
                 anlz_path: Some(chain(0x118, &[0x0])),
             },
             DeckChains {
-                bpm: chain(0x100, &[0x8, 0x20]),
+                bpm: Some(chain(0x100, &[0x8, 0x20])),
                 position: chain(0x100, &[0x8, 0x28]),
                 track_info: None,
                 anlz_path: None,
@@ -84,11 +86,11 @@ fn offsets_parse_rkbx_link_text_for_one_version() {
     assert_eq!(o.decks.len(), 2);
     assert_eq!(
         o.master_deck,
-        Chain::from_rkbx_line("05737C48 20 278 124").unwrap()
+        Chain::from_rkbx_line("05737C48 20 278 124")
     );
     assert_eq!(
         o.decks[1].bpm,
-        Chain::from_rkbx_line("0564B038 8 2B0 1A0").unwrap()
+        Some(Chain::from_rkbx_line("0564B038 8 2B0 1A0").unwrap())
     );
     assert!(o.decks[0].anlz_path.is_some());
     assert!(Offsets::from_rkbx_text(text, "7.2.18").is_none());
@@ -183,4 +185,70 @@ fn play_tracker_needs_movement_to_call_it_playing() {
         tracker.update(3.0, t0 + Duration::from_millis(650)),
         "a jump backwards (cue, loop) counts as movement"
     );
+}
+
+#[test]
+fn play_tracker_measures_the_playback_rate() {
+    let t0 = Instant::now();
+    let mut tracker = PlayTracker::default();
+    // Position advances at 1.05 s per second for two seconds, sampled every 100 ms.
+    for i in 0..=20 {
+        let t = t0 + Duration::from_millis(100 * i);
+        tracker.update(10.0 + 1.05 * 0.1 * i as f64, t);
+    }
+    let rate = tracker
+        .rate()
+        .expect("rate after half a second of movement");
+    assert!((rate - 1.05).abs() < 0.01, "rate {rate}");
+    // A seek backwards is a jump, not a rate change.
+    tracker.update(3.0, t0 + Duration::from_millis(2100));
+    tracker.update(3.105, t0 + Duration::from_millis(2200));
+    let after = tracker.rate().unwrap();
+    assert!((after - 1.05).abs() < 0.05, "rate after a seek {after}");
+}
+
+#[test]
+fn offsets_work_without_a_master_chain() {
+    let (mem, mut offsets) = fake_rekordbox();
+    offsets.master_deck = None;
+    let text = offsets.to_toml().unwrap();
+    let back = Offsets::from_toml(&text).unwrap();
+    assert_eq!(back.master_deck, None);
+    let reader = ChainReader::new(mem, offsets);
+    assert_eq!(reader.master_deck(), None);
+    assert!(reader.deck(0).is_some());
+}
+
+#[test]
+fn deck_chooser_follows_the_master_while_it_plays() {
+    let mut chooser = DeckChooser::default();
+    assert_eq!(chooser.choose(Some(1), &[Some(true), Some(true)]), Some(1));
+    // The master sits idle while the other deck plays: the playing deck is the show.
+    assert_eq!(chooser.choose(Some(1), &[Some(true), Some(false)]), Some(0));
+    // Nothing plays: back to the master.
+    assert_eq!(chooser.choose(Some(1), &[Some(false), Some(false)]), Some(1));
+}
+
+#[test]
+fn deck_chooser_sticks_to_the_playing_deck_through_a_transition() {
+    let mut chooser = DeckChooser::default();
+    assert_eq!(chooser.choose(None, &[Some(true), Some(false)]), Some(0));
+    assert_eq!(
+        chooser.choose(None, &[Some(true), Some(true)]),
+        Some(0),
+        "both play: no switch until the first deck stops"
+    );
+    assert_eq!(chooser.choose(None, &[Some(false), Some(true)]), Some(1));
+    assert_eq!(
+        chooser.choose(None, &[Some(false), Some(false)]),
+        Some(1),
+        "nothing plays: keep showing the last deck"
+    );
+}
+
+#[test]
+fn deck_chooser_falls_back_to_a_loaded_deck() {
+    let mut chooser = DeckChooser::default();
+    assert_eq!(chooser.choose(None, &[None, Some(false)]), Some(1));
+    assert_eq!(chooser.choose(None, &[None, None]), None);
 }

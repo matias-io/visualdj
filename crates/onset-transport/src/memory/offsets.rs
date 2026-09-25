@@ -20,8 +20,9 @@ pub enum PositionFormat {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DeckChains {
-    /// Current (pitched) tempo, f32.
-    pub bpm: Chain,
+    /// Current (pitched) tempo, f32, when rekordbox keeps one where a chain reaches it.
+    /// Without it the reader derives the tempo from the analysed BPM and the measured rate.
+    pub bpm: Option<Chain>,
     /// Playback position in `position_format`.
     pub position: Chain,
     /// `Track Title: …\nArtist: …\nAlbum: …` text block.
@@ -38,8 +39,10 @@ pub struct Offsets {
     /// Position units per second of track time: 44100 for a fixed sample clock, or 0 when
     /// the position counts samples of the loaded file (its own sample rate).
     pub position_rate_hz: f64,
-    /// Zero-based index of the master deck, u8.
-    pub master_deck: Chain,
+    /// Zero-based index of the master deck, u8, when a chain to it is known. Without one
+    /// the reader follows whichever deck is playing.
+    #[serde(default)]
+    pub master_deck: Option<Chain>,
     pub decks: Vec<DeckChains>,
     /// Where these chains came from (calibrator run, imported file, hand-derived).
     pub provenance: Option<String>,
@@ -117,7 +120,7 @@ impl Offsets {
                 .into_iter()
                 .filter(|g| g.len() >= 2)
                 .map(|g| DeckChains {
-                    bpm: g[0].clone(),
+                    bpm: Some(g[0].clone()),
                     position: g[1].clone(),
                     track_info: g.get(2).cloned(),
                     anlz_path: g.get(3).cloned(),
@@ -131,7 +134,7 @@ impl Offsets {
                 platform: "windows".to_string(),
                 position_format: PositionFormat::I64,
                 position_rate_hz: 44_100.0,
-                master_deck: master,
+                master_deck: Some(master),
                 decks,
                 provenance: Some("imported from rkbx_link offsets text".to_string()),
             });

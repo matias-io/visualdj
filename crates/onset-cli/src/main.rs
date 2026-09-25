@@ -104,6 +104,33 @@ enum Command {
         #[arg(long)]
         out: Option<PathBuf>,
     },
+    /// Find a paused deck's displayed time in memory, then keep what moves after play
+    Memfind {
+        /// The deck's elapsed time as shown, in seconds (e.g. 140.4 for 02:20.4)
+        seconds: f64,
+        #[arg(long, default_value_t = 0.06)]
+        tolerance: f64,
+        /// Seconds to wait for the operator to press play before re-checking
+        #[arg(long, default_value_t = 20)]
+        wait: u64,
+        #[arg(long, default_value_t = 6)]
+        depth: usize,
+        #[arg(long, default_value_t = 64)]
+        branch: usize,
+    },
+    /// Find the master-deck flag by moving MASTER between two calibrated decks
+    Memmaster {
+        /// Deck 1's position chain in rkbx notation
+        deck1: String,
+        /// Deck 2's position chain in rkbx notation
+        deck2: String,
+        /// Seconds given to the operator for each MASTER press
+        #[arg(long, default_value_t = 20)]
+        wait: u64,
+        /// Bytes watched from the start of each object along the chains
+        #[arg(long, default_value_t = 0x10000)]
+        window: usize,
+    },
     /// Print every static pointer chain to the given absolute addresses in rekordbox
     Memchains {
         /// Addresses in hex, e.g. 0x2d81797d2b4
@@ -118,17 +145,14 @@ enum Command {
         /// Chains such as "05C64808 2A0 10 1175 109A 0"
         chains: Vec<String>,
     },
-    /// Derive the pointer chains for the running rekordbox version (interactive) and write
-    /// offsets/<version>.toml
+    /// Derive the pointer chains for the running rekordbox version and write
+    /// offsets/<version>.toml. Each step is announced and detected in memory; no typing.
     Calibrate {
         /// Where to write the offsets file (default: `offsets/` or `ONSET_OFFSETS`)
         #[arg(long)]
         out_dir: Option<PathBuf>,
-        /// No keyboard: announce each step, wait, and work titles and tempo out itself
-        #[arg(long)]
-        auto: bool,
-        /// Seconds to wait after announcing a step in --auto mode
-        #[arg(long, default_value_t = 30)]
+        /// Seconds allowed for each step before the calibrator carries on without it
+        #[arg(long, default_value_t = 180)]
         step_seconds: u64,
     },
 }
@@ -181,6 +205,25 @@ fn main() -> anyhow::Result<()> {
         #[cfg(not(windows))]
         Command::Memscan { .. } => anyhow::bail!("memscan needs Windows"),
         #[cfg(windows)]
+        Command::Memfind {
+            seconds,
+            tolerance,
+            wait,
+            depth,
+            branch,
+        } => memscan::memfind(seconds, tolerance, wait, depth, branch)?,
+        #[cfg(not(windows))]
+        Command::Memfind { .. } => anyhow::bail!("memfind needs Windows"),
+        #[cfg(windows)]
+        Command::Memmaster {
+            deck1,
+            deck2,
+            wait,
+            window,
+        } => memscan::memmaster(&deck1, &deck2, wait, window)?,
+        #[cfg(not(windows))]
+        Command::Memmaster { .. } => anyhow::bail!("memmaster needs Windows"),
+        #[cfg(windows)]
         Command::Memchains {
             addrs,
             depth,
@@ -195,15 +238,10 @@ fn main() -> anyhow::Result<()> {
         #[cfg(windows)]
         Command::Calibrate {
             out_dir,
-            auto,
             step_seconds,
         } => {
-            let mode = if auto {
-                calibrate::Mode::Auto {
-                    step: std::time::Duration::from_secs(step_seconds),
-                }
-            } else {
-                calibrate::Mode::Interactive
+            let mode = calibrate::Mode {
+                step_limit: std::time::Duration::from_secs(step_seconds),
             };
             calibrate::calibrate(&out_dir.unwrap_or_else(calibrate::default_out_dir), &mode)?;
         }

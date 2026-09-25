@@ -21,4 +21,8 @@ pub trait TransportSource: Send {
     /// The sample rate of the track the engine believes is loaded, for sources whose
     /// position counts in samples of the file (rekordbox). Default: ignored.
     fn set_track_sample_rate(&mut self, _hz: Option<u32>) {}
+
+    /// The analysed tempo of the track the engine believes is loaded, for sources without
+    /// a readable tempo field. Default: ignored.
+    fn set_track_bpm(&mut self, _bpm: Option<f32>) {}
 }

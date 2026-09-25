@@ -10,8 +10,8 @@ use onset_transport::memory::REKORDBOX_EXE;
 use onset_transport::memory::chain::Chain;
 use onset_transport::memory::process::Process;
 use onset_transport::memory::scan::{
-    Counter, confirm_counters, find_bytes, find_f32_near, find_sample_counters, heap_regions,
-    known_tails, pointer_scan, roots_for_tail,
+    Counter, TimeHit, confirm_counters, find_bytes, find_f32_near, find_sample_counters,
+    find_time_values, heap_regions, known_tails, pointer_scan, read_time_hit, roots_for_tail,
 };
 
 /// Bytes of context printed around a string hit.
@@ -103,6 +103,228 @@ pub fn memresolve(lines: &[String]) -> anyhow::Result<()> {
                 );
             }
         }
+    }
+    Ok(())
+}
+
+/// Finds every value that encodes a deck's displayed time while it is paused, waits for the
+/// operator to press play, and keeps the ones that then advance at an audio rate: those are
+/// absolute positions. Static chains to the survivors are printed.
+pub fn memfind(
+    seconds: f64,
+    tolerance_s: f64,
+    wait_s: u64,
+    depth: usize,
+    branch: usize,
+) -> anyhow::Result<()> {
+    let p = Process::open(REKORDBOX_EXE)?;
+    println!("scanning for {seconds:.2} s (±{tolerance_s} s) in all encodings...");
+    let hits = find_time_values(&p, seconds, tolerance_s);
+    let mut by_kind: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
+    for h in &hits {
+        *by_kind
+            .entry(format!("{:?}@{}", h.format, h.rate_hz))
+            .or_default() += 1;
+    }
+    println!("{} hit(s): {by_kind:?}", hits.len());
+    println!("Press play on that deck now; checking again in {wait_s} s.");
+    std::thread::sleep(Duration::from_secs(wait_s));
+    let first: Vec<Option<f64>> = hits.iter().map(|h| read_time_hit(&p, h)).collect();
+    let t0 = std::time::Instant::now();
+    std::thread::sleep(Duration::from_millis(500));
+    let dt = t0.elapsed().as_secs_f64();
+    let mut movers: Vec<(TimeHit, f64)> = Vec::new();
+    for (h, a) in hits.iter().zip(first) {
+        let (Some(a), Some(b)) = (a, read_time_hit(&p, h)) else {
+            continue;
+        };
+        let rate = (b - a) / dt / h.rate_hz.abs();
+        if (0.5..=1.5).contains(&rate) {
+            movers.push((*h, b / h.rate_hz.abs()));
+        }
+    }
+    println!("{} of them advance like playback now:", movers.len());
+    for (h, secs) in &movers {
+        println!(
+            "  {:#x} {:?}@{} now {secs:.2} s",
+            h.addr, h.format, h.rate_hz
+        );
+    }
+    for (h, _) in movers.iter().take(4) {
+        let chains = pointer_scan(&p, h.addr, depth, branch);
+        println!("== {:#x}: {} static chain(s)", h.addr, chains.len());
+        for c in chains.iter().take(12) {
+            println!("  {}", chain_line(c));
+        }
+    }
+    Ok(())
+}
+
+/// One object a chain walks through: where it starts and the hops that lead to it, so a
+/// field inside it can be written as a chain of its own.
+struct Object {
+    base: u64,
+    hops: Vec<u64>,
+    /// The chain's static root itself rather than a dereferenced pointer.
+    is_static: bool,
+}
+
+/// The objects along a chain: the static root first (no hops), then each dereferenced
+/// pointer with the hops before it.
+fn chain_objects(p: &Process, chain: &Chain) -> Vec<Object> {
+    let mut out = vec![Object {
+        base: p.module_base + chain.root,
+        hops: Vec::new(),
+        is_static: true,
+    }];
+    let mut addr = p.module_base + chain.root;
+    for (i, hop) in chain.hops.iter().enumerate() {
+        let Ok(ptr) = p.read_u64(addr) else { break };
+        out.push(Object {
+            base: ptr,
+            hops: chain.hops[..i].to_vec(),
+            is_static: false,
+        });
+        addr = ptr + hop;
+    }
+    out
+}
+
+/// A field at `offset` inside `obj`, as a chain from the same root.
+fn field_chain(root: u64, obj: &Object, offset: u64) -> Chain {
+    if obj.is_static {
+        return Chain {
+            root: root + offset,
+            hops: Vec::new(),
+        };
+    }
+    let mut hops = obj.hops.clone();
+    hops.push(offset);
+    Chain { root, hops }
+}
+
+/// Reads up to `window` bytes from `base`, page by page, stopping at the first page the
+/// process will not give up.
+fn read_window(p: &Process, base: u64, window: usize) -> Vec<u8> {
+    let mut out = Vec::new();
+    let mut page = [0u8; 0x1000];
+    while out.len() < window {
+        if p.read_exact(base + out.len() as u64, &mut page).is_err() {
+            break;
+        }
+        out.extend_from_slice(&page);
+    }
+    out
+}
+
+/// Contiguous runs of indexes where `a` and `b` differ but `a` and `c` agree: the bytes
+/// that changed with the first action and changed back with the second.
+fn toggled_runs(before: &[u8], during: &[u8], after: &[u8]) -> Vec<(usize, usize)> {
+    let len = before.len().min(during.len()).min(after.len());
+    let toggled = |i: usize| before[i] != during[i] && before[i] == after[i];
+    let mut runs: Vec<(usize, usize)> = Vec::new();
+    let mut i = 0;
+    while i < len {
+        if toggled(i) {
+            let start = i;
+            while i < len && toggled(i) {
+                i += 1;
+            }
+            runs.push((start, i - start));
+        } else {
+            i += 1;
+        }
+    }
+    runs
+}
+
+fn hex_bytes(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect::<Vec<_>>().join(" ")
+}
+
+/// Finds the master-deck state by difference: snapshots the objects along both decks'
+/// position chains and the module's static data, has the operator move MASTER to deck 2
+/// and back, and prints every byte run that changed and then changed back.
+pub fn memmaster(deck1: &str, deck2: &str, wait_s: u64, window: usize) -> anyhow::Result<()> {
+    let p = Process::open(REKORDBOX_EXE)?;
+    let chains: Vec<(String, Chain)> = [("deck 1", deck1), ("deck 2", deck2)]
+        .into_iter()
+        .map(|(name, line)| {
+            Chain::from_rkbx_line(line)
+                .map(|c| (name.to_string(), c))
+                .ok_or_else(|| anyhow::anyhow!("{line}: not a chain"))
+        })
+        .collect::<anyhow::Result<_>>()?;
+    let mut objects: Vec<(String, u64, Object)> = Vec::new();
+    for (name, chain) in &chains {
+        for obj in chain_objects(&p, chain) {
+            objects.push((name.clone(), chain.root, obj));
+        }
+    }
+    println!("{} object(s) along the chains; {window:#x} bytes watched in each", objects.len());
+    let statics = p.static_regions();
+    let snap = |p: &Process| -> (Vec<Vec<u8>>, Vec<Vec<u8>>) {
+        let objs = objects
+            .iter()
+            .map(|(_, _, o)| read_window(p, o.base, window))
+            .collect();
+        let st = statics
+            .iter()
+            .map(|r| p.read_region(r).unwrap_or_default())
+            .collect();
+        (objs, st)
+    };
+    println!("Snapshot with MASTER on deck 1...");
+    let (a_obj, a_st) = snap(&p);
+    println!("Press MASTER on deck 2 now; snapshot in {wait_s} s.");
+    std::thread::sleep(Duration::from_secs(wait_s));
+    let (b_obj, b_st) = snap(&p);
+    println!("Press MASTER on deck 1 now; snapshot in {wait_s} s.");
+    std::thread::sleep(Duration::from_secs(wait_s));
+    let (c_obj, c_st) = snap(&p);
+
+    let mut shown = 0;
+    for (k, (name, root, obj)) in objects.iter().enumerate() {
+        for (start, len) in toggled_runs(&a_obj[k], &b_obj[k], &c_obj[k]) {
+            if len > 16 {
+                continue; // buffers and strings, not a flag
+            }
+            let addr = obj.base + start as u64;
+            let chain = field_chain(*root, obj, start as u64);
+            println!(
+                "  {name} object {k} {addr:#x} +{start:#x} ({len} B): {} -> {}   chain {}",
+                hex_bytes(&a_obj[k][start..start + len]),
+                hex_bytes(&b_obj[k][start..start + len]),
+                chain_line(&chain)
+            );
+            shown += 1;
+            if shown > 80 {
+                println!("  ... more");
+                return Ok(());
+            }
+        }
+    }
+    for (k, r) in statics.iter().enumerate() {
+        for (start, len) in toggled_runs(&a_st[k], &b_st[k], &c_st[k]) {
+            if len > 16 {
+                continue;
+            }
+            let addr = r.base + start as u64;
+            println!(
+                "  static {addr:#x} (module+{:#x}, {len} B): {} -> {}",
+                addr - p.module_base,
+                hex_bytes(&a_st[k][start..start + len]),
+                hex_bytes(&b_st[k][start..start + len])
+            );
+            shown += 1;
+            if shown > 120 {
+                println!("  ... more");
+                return Ok(());
+            }
+        }
+    }
+    if shown == 0 {
+        println!("nothing toggled; the master state lives elsewhere");
     }
     Ok(())
 }

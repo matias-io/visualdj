@@ -1,0 +1,22 @@
+# rekordbox 7.2.18 (Windows): pointer chains from the module base to each deck's playback
+# position. Found with `onset-cli memfind` and `calibrate` on 2026-09-24; positions count
+# samples of the loaded file (44.1 or 48 kHz), so position_rate_hz is 0 and the reader
+# uses the track's own rate. No master-deck chain is known yet: the show follows the deck
+# that is playing. Chains in rkbx notation:
+#   deck 1  05D12110 D28 4C0 B40 1D78 1508 0
+#   deck 2  05D12110 D28 4C0 B40 2000 1D78 1938 0
+rekordbox_version = "7.2.18"
+platform = "windows"
+position_format = "i32"
+position_rate_hz = 0.0
+provenance = "onset-cli memfind + calibrate run 13, 2026-09-24; master and track identity pending"
+
+[[decks]]
+[decks.position]
+root = 0x5d12110
+hops = [0xd28, 0x4c0, 0xb40, 0x1d78, 0x1508]
+
+[[decks]]
+[decks.position]
+root = 0x5d12110
+hops = [0xd28, 0x4c0, 0xb40, 0x2000, 0x1d78, 0x1938]

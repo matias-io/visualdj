@@ -6,6 +6,7 @@ use std::time::{Duration, Instant};
 
 use super::chain::Chain;
 use super::process::{Process, Region, RegionKind};
+use super::reader::Mem as _;
 
 /// Sample rates a deck counter may run at.
 pub const SAMPLE_RATES: [f64; 2] = [44_100.0, 48_000.0];
@@ -119,23 +120,26 @@ fn counters_in_batch(
     pitch_tolerance: f64,
     out: &mut Vec<Counter>,
 ) {
-    let mut first: Vec<(Region, Vec<u8>)> = Vec::with_capacity(regions.len());
+    // Each region keeps its own first-read time: copying half a gigabyte takes a good
+    // fraction of the window, and a rate measured against the batch's end time would be
+    // wrong by that much for the regions copied first.
+    let mut first: Vec<(Region, Vec<u8>, Instant)> = Vec::with_capacity(regions.len());
     for r in regions {
         if let Some(bytes) = p.read_region(r) {
-            first.push((*r, bytes));
+            first.push((*r, bytes, Instant::now()));
         }
     }
-    let t0 = Instant::now();
     std::thread::sleep(dt);
-    for (r, a) in &first {
+    for (r, a, read_at) in &first {
         let Some(b) = p.read_region(r) else {
             continue;
         };
-        let elapsed = t0.elapsed().as_secs_f64();
+        let elapsed = read_at.elapsed().as_secs_f64();
         let n = a.len().min(b.len());
         let mut i = 0;
         while i + 4 <= n {
-            for format in [CounterFormat::I64, CounterFormat::F64, CounterFormat::I32] {
+            // Narrowest integer first: a 32-bit field read as i64 picks up its neighbour.
+            for format in [CounterFormat::I32, CounterFormat::I64, CounterFormat::F64] {
                 let (Some(va), Some(vb)) =
                     (read_counter(&a[i..], format), read_counter(&b[i..], format))
                 else {
@@ -240,6 +244,81 @@ pub fn find_f32_near(
         }
     }
     out
+}
+
+/// A value found by [`find_time_values`]: where, how it was encoded, and what it read.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TimeHit {
+    pub addr: u64,
+    pub format: CounterFormat,
+    /// Units per second the encoding implies (44100, 48000, 1000 or 1).
+    pub rate_hz: f64,
+    pub value: f64,
+}
+
+/// Every heap value that encodes `seconds` (within `tolerance_s`) as an i32 sample count at
+/// 44.1 or 48 kHz, an i32 millisecond count, an f32 or f64 in seconds, or an f64 in ms.
+pub fn find_time_values(p: &Process, seconds: f64, tolerance_s: f64) -> Vec<TimeHit> {
+    let encodings: [(CounterFormat, f64); 6] = [
+        (CounterFormat::I32, 44_100.0),
+        (CounterFormat::I32, 48_000.0),
+        (CounterFormat::I32, 1000.0),
+        (CounterFormat::F64, 1.0),
+        (CounterFormat::F64, 1000.0),
+        (CounterFormat::I64, 44_100.0),
+    ];
+    let mut out = Vec::new();
+    for r in heap_regions(p) {
+        let Some(bytes) = p.read_region(&r) else {
+            continue;
+        };
+        let mut i = 0;
+        while i + 8 <= bytes.len() {
+            let i32v = f64::from(i32::from_le_bytes(bytes[i..i + 4].try_into().unwrap()));
+            let f32v = f64::from(f32::from_le_bytes(bytes[i..i + 4].try_into().unwrap()));
+            let f64v = f64::from_le_bytes(bytes[i..i + 8].try_into().unwrap());
+            let i64v = i64::from_le_bytes(bytes[i..i + 8].try_into().unwrap()) as f64;
+            for (format, rate) in encodings {
+                let v = match format {
+                    CounterFormat::I32 => i32v,
+                    CounterFormat::F64 => f64v,
+                    CounterFormat::I64 => i64v,
+                };
+                if v.is_finite() && (v / rate - seconds).abs() <= tolerance_s {
+                    out.push(TimeHit {
+                        addr: r.base + i as u64,
+                        format,
+                        rate_hz: rate,
+                        value: v,
+                    });
+                }
+            }
+            if (f32v - seconds).abs() <= tolerance_s {
+                // f32 seconds: reuse the F64 tag with a marker rate of 1; the caller reads
+                // f32 when `value` fits in f32 exactly. Rare in practice; kept for completeness.
+                out.push(TimeHit {
+                    addr: r.base + i as u64,
+                    format: CounterFormat::F64,
+                    rate_hz: -1.0,
+                    value: f32v,
+                });
+            }
+            i += 4;
+        }
+    }
+    out
+}
+
+/// Re-reads a time hit in its own encoding.
+pub fn read_time_hit(p: &Process, hit: &TimeHit) -> Option<f64> {
+    if hit.rate_hz < 0.0 {
+        return p.read_f32(hit.addr).ok().map(f64::from);
+    }
+    match hit.format {
+        CounterFormat::I32 => p.read_i32(hit.addr).ok().map(f64::from),
+        CounterFormat::I64 => p.read_i64(hit.addr).ok().map(|v| v as f64),
+        CounterFormat::F64 => p.read_f64(hit.addr).ok(),
+    }
 }
 
 /// Every occurrence of `needle` in heap memory (capped).

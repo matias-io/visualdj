@@ -59,6 +59,11 @@ pub enum EngineStatus {
     Waiting(String),
     /// A source is connected but no track is loaded on the master deck.
     Idle,
+    /// A deck is playing but its track could not be identified: the show runs on audio
+    /// and playhead alone, without the analysed structure.
+    Unidentified {
+        source: String,
+    },
     Running {
         source: String,
         track: String,
@@ -73,6 +78,7 @@ impl EngineStatus {
             Self::Starting => "starting".to_string(),
             Self::Waiting(why) => why.clone(),
             Self::Idle => "connected, no track".to_string(),
+            Self::Unidentified { source } => format!("{source}: unidentified track (audio only)"),
             Self::Running { source, track } => format!("{source}: {track}"),
             Self::Error(e) => format!("error: {e}"),
         }
@@ -370,6 +376,11 @@ impl Running {
                 source: self.source.name().to_string(),
                 track: format!("{} - {}", c.meta.artist, c.meta.title),
             },
+            (SourceStatus::Connected, None) if self.clock.is_playing() => {
+                EngineStatus::Unidentified {
+                    source: self.source.name().to_string(),
+                }
+            }
             (SourceStatus::Connected, None) => EngineStatus::Idle,
         }
     }
@@ -422,6 +433,7 @@ impl Running {
             tracing::info!(title = %meta.title, artist = %meta.artist, "master deck track");
             if let Source::Live(s) = &mut self.source {
                 s.set_track_sample_rate(meta.sample_rate);
+                s.set_track_bpm(meta.bpm);
             }
             self.current = Some(load_current(
                 &self.library,
@@ -475,10 +487,20 @@ impl Running {
         }
 
         let Some(current) = self.current.as_ref() else {
-            return MusicState {
+            // No identified track: the visuals still get the audio and the playhead.
+            let st = onset_core::structure::StructureState::default();
+            let intensity = self.director.update(&st, dt);
+            let audio = self.audio(now);
+            return MusicState::assemble(
                 time_s,
-                ..MusicState::default()
-            };
+                self.clock.playhead_at(now).unwrap_or(0.0),
+                self.clock.is_playing(),
+                self.clock.rate(),
+                &st,
+                audio,
+                intensity,
+                None,
+            );
         };
         let playhead = self.clock.playhead_at(now).unwrap_or(0.0);
         let meta = current.meta.clone();
