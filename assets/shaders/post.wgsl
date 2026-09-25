@@ -218,8 +218,15 @@ fn fs_composite(in: VsOut) -> @location(0) vec4<f32> {
     col = aces(col);
 
     col = clamp(hue_rotate(col, post.a.w), vec3<f32>(0.0), vec3<f32>(1.0));
-    // Inversion that keeps hues: the picture's light becomes its dark, colours stay put.
-    let inverted = clamp(hue_rotate(vec3<f32>(1.0) - col, 0.5), vec3<f32>(0.0), vec3<f32>(1.0));
+    // Inversion: every colour swaps for its complement while each pixel keeps its
+    // brightness, with only a touch of the true negative. A dark scene stays dark, so the
+    // change is dramatic without the white blast a full negative gives (which is also a
+    // photosensitivity risk).
+    let luma_of = dot(col, vec3<f32>(0.2126, 0.7152, 0.0722));
+    var comp = hue_rotate(col, 0.5);
+    comp = comp * (luma_of / max(dot(comp, vec3<f32>(0.2126, 0.7152, 0.0722)), 1e-3));
+    let negative = hue_rotate(vec3<f32>(1.0) - col, 0.5);
+    let inverted = clamp(mix(comp, negative, 0.2), vec3<f32>(0.0), vec3<f32>(1.0));
     col = mix(col, inverted, clamp(post.a.z, 0.0, 1.0));
 
     // Build-up: soft bars of light sweep diagonally across the screen, more of them and

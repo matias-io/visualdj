@@ -41,6 +41,10 @@ pub enum OverlayAction {
     Preview(onset_core::show::ShowEvent),
     /// Play a four-second build-up ending in a drop on the preview.
     PreviewBuild,
+    /// Turn the blackout on or off (the preview shows it too).
+    ToggleBlackout,
+    /// Use this image as the blackout logo (copied beside the config), or none.
+    BlackoutLogo(Option<std::path::PathBuf>),
     NextScene,
 }
 
@@ -81,6 +85,8 @@ pub struct OverlayView<'a> {
     pub analysis: onset_core::bands::BandsAt,
     /// One line about the current track's lyrics ("synced lyrics from LRCLIB", "none found").
     pub lyrics_status: &'a str,
+    /// Progress of the whole-library lyrics look-up.
+    pub lyrics_progress: &'a str,
 }
 
 /// Where a frame's panel is drawn.

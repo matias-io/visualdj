@@ -119,6 +119,9 @@ impl Default for RenderSettings {
     }
 }
 
+/// How long the shortcut hint stays when the show starts.
+const HINT_S: f32 = 6.0;
+
 /// Length of the launcher's build-up preview.
 const BUILD_PREVIEW_S: f32 = 4.0;
 
@@ -159,6 +162,16 @@ pub struct Renderer {
     show_hud: bool,
     /// One line about the current track's lyrics, for the launcher.
     lyrics_status: String,
+    /// The graphics card's name, for the HUD.
+    adapter: String,
+    /// The blackout screen's logo and how much of the screen it may fill.
+    logo_quads: crate::quad::QuadPipeline,
+    logo: Option<crate::quad::QuadTexture>,
+    logo_size: f32,
+    /// When the blackout began (renderer clock), for the logo's fade in.
+    blackout_since: f32,
+    /// When the shortcut hint started showing (renderer clock).
+    hint_from: Option<f32>,
     lyrics: crate::lyrics::LyricsLayer,
     lyrics_options: crate::overlay_options::LyricsOptions,
     /// When a launcher build-up preview started (renderer clock), while it runs.
@@ -208,10 +221,16 @@ impl Renderer {
             source_line: String::new(),
             text: TextLayer::new(gpu, format),
             card: Card::new(gpu, format),
+            logo_quads: crate::quad::QuadPipeline::new(gpu, format),
+            logo: None,
+            logo_size: 0.5,
+            blackout_since: 0.0,
             hud: Hud::new(),
             show_card: true,
             build_preview: None,
             lyrics_status: String::new(),
+            adapter: String::new(),
+            hint_from: None,
             lyrics: crate::lyrics::LyricsLayer::new(),
             lyrics_options: crate::overlay_options::LyricsOptions::default(),
             hud_options: crate::overlay_options::HudOptions::default(),
@@ -280,6 +299,68 @@ impl Renderer {
         self.show.inject(event);
     }
 
+    /// The graphics card's name, for the HUD.
+    pub fn set_adapter_name(&mut self, name: String) {
+        self.adapter = name;
+    }
+
+    /// Shows the show's keyboard shortcuts along the bottom for a few seconds.
+    pub fn show_hint(&mut self) {
+        self.hint_from = Some(self.frame_clock);
+    }
+
+    /// The shortcut hint, fading in and out over [`HINT_S`].
+    fn hint_items(&mut self, time_s: f32) -> Vec<TextItem> {
+        let Some(from) = self.hint_from else {
+            return Vec::new();
+        };
+        let age = time_s - from;
+        if !(0.0..HINT_S).contains(&age) {
+            return Vec::new();
+        }
+        let alpha = (age / 0.4).min(1.0).min((HINT_S - age) / 1.0).clamp(0.0, 1.0);
+        let px = 18.0 * self.scale.max(1.0);
+        let text = "H  stats   ·   C  now-playing card   ·   B  blackout   ·   Left / Right  scene   ·   Esc  back to the launcher";
+        let mut item = TextItem::new(text, px, (0.0, 0.0))
+            .weight(500)
+            .color([255, 255, 255, (220.0 * alpha) as u8]);
+        let (w, _) = self.text.measure(&item);
+        item.pos = (
+            (self.size.0 as f32 - w) * 0.5,
+            self.size.1 as f32 - px * 2.6,
+        );
+        let mut shadow = item.clone();
+        shadow.pos = (item.pos.0 + 1.5, item.pos.1 + 1.5);
+        shadow.color = [0, 0, 0, (180.0 * alpha) as u8];
+        vec![shadow, item]
+    }
+
+    /// Moves the HUD's lines to the chosen corner (they are laid out top left).
+    fn place_hud(&mut self, items: &mut [TextItem]) {
+        use crate::overlay_options::Corner;
+        let corner = self.hud_options.corner;
+        if corner == Corner::TopLeft || items.is_empty() {
+            return;
+        }
+        let left = items.iter().map(|i| i.pos.0).fold(f32::MAX, f32::min);
+        let top = items.iter().map(|i| i.pos.1).fold(f32::MAX, f32::min);
+        let sizes: Vec<(f32, f32)> = items.iter().map(|i| self.text.measure(i)).collect();
+        let bottom = items
+            .iter()
+            .zip(&sizes)
+            .map(|(i, s)| i.pos.1 + s.1)
+            .fold(0.0, f32::max);
+        let (w, h) = (self.size.0 as f32, self.size.1 as f32);
+        for (item, (iw, _)) in items.iter_mut().zip(&sizes) {
+            if corner.is_right() {
+                item.pos.0 = w - left - iw + (item.pos.0 - left);
+            }
+            if !corner.is_top() {
+                item.pos.1 += (h - top) - bottom;
+            }
+        }
+    }
+
     /// One line about the current track's lyrics.
     pub fn lyrics_status(&self) -> &str {
         &self.lyrics_status
@@ -315,7 +396,48 @@ impl Renderer {
     }
 
     pub fn set_blackout(&mut self, on: bool) {
+        if on && !self.blackout {
+            self.blackout_since = self.frame_clock;
+        }
         self.blackout = on;
+    }
+
+    /// The image shown in the middle of the blackout screen, or none; `size` is the share
+    /// of the screen it may fill (0.1..1).
+    pub fn set_blackout_logo(&mut self, gpu: &Gpu, image: Option<&image::RgbaImage>, size: f32) {
+        self.logo = image.map(|img| self.logo_quads.upload(gpu, img));
+        self.logo_size = size.clamp(0.1, 1.0);
+    }
+
+    pub fn set_blackout_logo_size(&mut self, size: f32) {
+        self.logo_size = size.clamp(0.1, 1.0);
+    }
+
+    /// Draws the blackout logo, fading in over the first moments of the blackout.
+    fn draw_logo(&self, gpu: &Gpu, encoder: &mut wgpu::CommandEncoder, target: &wgpu::TextureView, time_s: f32) {
+        let Some(logo) = &self.logo else {
+            return;
+        };
+        let (w, h) = (self.size.0 as f32, self.size.1 as f32);
+        let (lw, lh) = (logo.size.0.max(1) as f32, logo.size.1.max(1) as f32);
+        let fit = (w * self.logo_size / lw).min(h * self.logo_size / lh);
+        let (dw, dh) = (lw * fit, lh * fit);
+        let t = ((time_s - self.blackout_since) / 0.8).clamp(0.0, 1.0);
+        logo.place(gpu, [(w - dw) * 0.5, (h - dh) * 0.5, dw, dh], self.size, t * t * (3.0 - 2.0 * t));
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("blackout logo"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: target,
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Load,
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            ..Default::default()
+        });
+        self.logo_quads.draw(&mut pass, logo);
     }
 
     pub fn blackout(&self) -> bool {
@@ -746,6 +868,7 @@ impl Renderer {
             clear_to_black(encoder, target);
         }
         if self.blackout {
+            self.draw_logo(gpu, encoder, target, time_s);
             let cpu_ms = started.elapsed().as_secs_f32() * 1000.0;
             self.last_cpu_ms = cpu_ms;
             return FrameStats { cpu_ms };
@@ -808,14 +931,17 @@ impl Renderer {
                 scene: self.active_scene().unwrap_or("-").to_string(),
                 size: self.size,
                 gpu_ms: None,
+                adapter: self.adapter.clone(),
                 last_error: self.last_error.clone(),
                 source: self.source_line.clone(),
             };
-            items.extend(
-                self.hud
-                    .items(ms, &info, self.scale * grow, &self.hud_options),
-            );
+            let mut hud = self
+                .hud
+                .items(ms, &info, self.scale * grow, &self.hud_options);
+            self.place_hud(&mut hud);
+            items.extend(hud);
         }
+        items.extend(self.hint_items(time_s));
         if !items.is_empty() {
             match self.text.prepare(gpu, self.size, &items) {
                 Ok(()) => {

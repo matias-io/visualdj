@@ -52,6 +52,8 @@ pub enum EngineCommand {
     LoadTrack(String),
     /// Capture this device (name fragment), or pick automatically with `None`; applies now.
     SetAudioDevice(Option<String>),
+    /// Look up and cache the lyrics of every track in the collection, in the background.
+    PrefetchLyrics,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -113,7 +115,34 @@ pub struct Engine {
     simulator: bool,
     /// The audio device being captured, for the launcher.
     audio_device: Arc<ArcSwap<String>>,
+    /// Progress of the whole-library lyrics look-up, empty when none has run.
+    lyrics_progress: Arc<ArcSwap<String>>,
     _thread: std::thread::JoinHandle<()>,
+}
+
+/// Looks up the lyrics of every track (cached ones are instant) and reports progress.
+fn prefetch_lyrics(tracks: &[TrackMeta], cache_dir: &std::path::Path, progress: &ArcSwap<String>) {
+    use onset_lyrics::{LyricsStore, Outcome, Query};
+    let store = LyricsStore::new(&cache_dir.join("lyrics"));
+    let total = tracks.len();
+    let mut synced = 0;
+    for (i, t) in tracks.iter().enumerate() {
+        let q = Query::from_meta(t);
+        let cached = store.cached(&q).is_some();
+        if matches!(store.lookup(&q, true), Outcome::Synced(_)) {
+            synced += 1;
+        }
+        progress.store(Arc::new(format!(
+            "Checked {} of {total} tracks; {synced} have synced lyrics",
+            i + 1
+        )));
+        if !cached {
+            std::thread::sleep(Duration::from_millis(300)); // gentle on the free service
+        }
+    }
+    progress.store(Arc::new(format!(
+        "Done: {synced} of {total} tracks have synced lyrics (the rest are instrumentals, samples or not in LRCLIB)"
+    )));
 }
 
 /// The track the master deck holds, with everything the structure engine needs.
@@ -349,6 +378,8 @@ impl Engine {
                 .map_or_else(|| "none".to_string(), |c| c.stream.name().to_string()),
         ));
         let audio_device_w = audio_device.clone();
+        let lyrics_progress = Arc::new(ArcSwap::from_pointee(String::new()));
+        let lyrics_progress_w = lyrics_progress.clone();
         let audio_choice = Arc::new(parking_lot::Mutex::new(cfg.audio_device.clone()));
 
         let (state_w, status_w) = (state.clone(), status.clone());
@@ -374,6 +405,7 @@ impl Engine {
                     audio_device: audio_device_w,
                     audio_choice: audio_choice.clone(),
                     audio_want: spawn_audio_watch(audio_choice),
+                    lyrics_progress: lyrics_progress_w,
                 };
 
                 engine.run(&rx, &state_w, &status_w);
@@ -385,6 +417,7 @@ impl Engine {
             tracks,
             simulator,
             audio_device,
+            lyrics_progress,
             _thread: thread,
         })
     }
@@ -406,6 +439,11 @@ impl Engine {
     /// The audio device being captured ("none" when capture could not start).
     pub fn audio_device(&self) -> String {
         (**self.audio_device.load()).clone()
+    }
+
+    /// Progress of the whole-library lyrics look-up; empty when none has run.
+    pub fn lyrics_progress(&self) -> String {
+        (**self.lyrics_progress.load()).clone()
     }
 
     /// True when the developer simulator is the source (transport controls apply).
@@ -470,6 +508,8 @@ struct Running {
     audio_choice: Arc<parking_lot::Mutex<Option<String>>>,
     /// The watch thread's latest answer: the device the capture should use.
     audio_want: crossbeam_channel::Receiver<Option<String>>,
+    /// Shared with the handle: the whole-library lyrics look-up's progress.
+    lyrics_progress: Arc<ArcSwap<String>>,
 }
 
 impl Running {
@@ -521,6 +561,21 @@ impl Running {
                         tracing::error!("load failed: {e:#}");
                         status.store(Arc::new(EngineStatus::Error(format!("{e:#}"))));
                         self.last_status = None;
+                    }
+                }
+            }
+            (EngineCommand::PrefetchLyrics, _) => {
+                let busy = self.lyrics_progress.load().starts_with("Checked");
+                if !busy {
+                    let tracks = self.library.tracks().to_vec();
+                    let cache = self.cfg.cache_dir.clone();
+                    let progress = self.lyrics_progress.clone();
+                    progress.store(Arc::new("Starting the lyrics look-up...".into()));
+                    let spawned = std::thread::Builder::new()
+                        .name("onset-lyrics-all".into())
+                        .spawn(move || prefetch_lyrics(&tracks, &cache, &progress));
+                    if let Err(e) = spawned {
+                        tracing::warn!(error = %e, "cannot start the lyrics look-up");
                     }
                 }
             }

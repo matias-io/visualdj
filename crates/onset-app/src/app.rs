@@ -299,6 +299,10 @@ fn draw_overlay(
         .engine
         .as_ref()
         .map_or_else(|| "none".to_string(), crate::engine::Engine::audio_device);
+    let lyrics_progress = opts
+        .engine
+        .as_ref()
+        .map_or_else(String::new, crate::engine::Engine::lyrics_progress);
     let overlay_view = OverlayView {
         monitors,
         scenes: &scenes,
@@ -321,6 +325,7 @@ fn draw_overlay(
         audio_device: &audio_device,
         analysis: ms.analysis,
         lyrics_status: &lyrics_status,
+        lyrics_progress: &lyrics_progress,
     };
     let target = DrawTarget {
         window: &s.window,
@@ -459,6 +464,7 @@ impl OnsetApp {
         renderer.set_settings(&gpu, self.render_settings());
         renderer.set_overlay_options(self.opts.config.hud.clone(), self.opts.config.card.clone());
         renderer.set_lyrics_options(self.opts.config.lyrics.clone());
+        renderer.set_adapter_name(gpu.adapter_name());
         renderer.set_internal_scale(&gpu, self.opts.config.internal_scale);
         load_scenes(&gpu, &mut renderer);
         let wanted = self
@@ -493,6 +499,7 @@ impl OnsetApp {
             watcher,
             overlay,
         });
+        self.apply_logo();
         Ok(())
     }
 
@@ -707,6 +714,7 @@ impl OnsetApp {
                     s.renderer.set_settings(&s.gpu, settings);
                     s.renderer.set_overlay_options(hud, card);
                     s.renderer.set_lyrics_options(self.opts.config.lyrics.clone());
+                    s.renderer.set_blackout_logo_size(self.opts.config.blackout_logo_size);
                 }
             }
             OverlayAction::Preview(event) => {
@@ -714,6 +722,13 @@ impl OnsetApp {
                     s.renderer.preview_event(event);
                 }
             }
+            OverlayAction::ToggleBlackout => {
+                if let Some(s) = self.surface.as_mut() {
+                    let on = !s.renderer.blackout();
+                    s.renderer.set_blackout(on);
+                }
+            }
+            OverlayAction::BlackoutLogo(source) => self.set_logo(source.as_deref()),
             OverlayAction::PreviewBuild => {
                 if let Some(s) = self.surface.as_mut() {
                     s.renderer.preview_build();
@@ -724,6 +739,40 @@ impl OnsetApp {
                     s.renderer.next_scene();
                 }
             }
+        }
+    }
+
+    /// Makes `source` the blackout logo (Onset keeps its own copy), or removes the logo.
+    fn set_logo(&mut self, source: Option<&std::path::Path>) {
+        let adopted = match source {
+            Some(p) => match Config::adopt_logo(p) {
+                Ok(dest) => Some(dest),
+                Err(e) => {
+                    tracing::warn!(path = %p.display(), "not an image Onset can show: {e:#}");
+                    return;
+                }
+            },
+            None => None,
+        };
+        self.opts.config.blackout_logo = adopted;
+        if let Err(e) = self.opts.config.save() {
+            tracing::warn!("could not save config: {e:#}");
+        }
+        self.apply_logo();
+    }
+
+    /// Loads the configured blackout logo into the renderer.
+    fn apply_logo(&mut self) {
+        let image = self
+            .opts
+            .config
+            .blackout_logo
+            .as_ref()
+            .and_then(|p| image::open(p).ok())
+            .map(|i| i.to_rgba8());
+        let size = self.opts.config.blackout_logo_size;
+        if let Some(s) = self.surface.as_mut() {
+            s.renderer.set_blackout_logo(&s.gpu, image.as_ref(), size);
         }
     }
 
@@ -740,6 +789,7 @@ impl OnsetApp {
             s.overlay.set_page(&s.window, Page::Hidden);
             s.renderer.set_show_card(self.opts.config.show_card);
             s.renderer.set_show_hud(self.opts.config.show_hud);
+            s.renderer.show_hint();
             s.window.set_decorations(false);
             if self.fullscreen {
                 s.window
@@ -976,6 +1026,9 @@ impl ApplicationHandler for OnsetApp {
                     let size = s.window.inner_size();
                     self.resize(size);
                 }
+            }
+            WindowEvent::DroppedFile(path) if self.mode == Mode::Launcher => {
+                self.set_logo(Some(&path));
             }
             WindowEvent::RedrawRequested => {
                 self.render();

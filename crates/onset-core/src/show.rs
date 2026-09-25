@@ -386,7 +386,7 @@ impl ShowDirector {
                     let sign = if self.rng.chance(0.5) { 1.0 } else { -1.0 };
                     self.hue_target += sign * (0.12 + 0.1 * self.rng.unit()) * s.colour;
                     self.shake_burst = self.shake_burst.max(s.shake);
-                    self.zoom_burst = self.zoom_burst.max(0.12 * s.reactivity);
+                    self.zoom_burst = self.zoom_burst.max(0.07 * s.reactivity);
                     if self.rng.chance(s.inversions) {
                         self.invert_target = 1.0;
                         self.invert_hold_s = beat_s;
@@ -466,7 +466,7 @@ impl ShowDirector {
 
         let kick = ms.audio.kick * s.reactivity;
         fx.shake = (kick * s.shake * ms.intensity * 0.35 + self.shake_burst).min(1.0);
-        fx.zoom = kick * 0.03 + self.zoom_burst;
+        fx.zoom = kick * 0.015 + self.zoom_burst;
 
         fx.tension = match ms.drop_countdown_beats {
             Some(n) if n <= 16 && ms.phrase != Some(PhraseKind::Chorus) => {

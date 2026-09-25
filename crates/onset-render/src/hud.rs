@@ -20,6 +20,8 @@ pub struct HudInfo {
     pub scene: String,
     pub size: (u32, u32),
     pub gpu_ms: Option<f32>,
+    /// The graphics card rendering the show.
+    pub adapter: String,
     pub last_error: Option<String>,
     /// The engine's one-line status ("waiting for rekordbox", "rekordbox: Artist - Title").
     pub source: String,
@@ -156,10 +158,15 @@ impl Hud {
             on(
                 o.performance,
                 format!(
-                    "frame {:.1} ms  ·  p99 {:.1} ms  ·  cpu {:.2} ms{gpu}",
+                    "frame {:.1} ms  ·  p99 {:.1} ms  ·  cpu {:.2} ms{gpu}{}",
                     self.last_frame_ms(),
                     self.p99_ms(),
-                    self.cpu_ms
+                    self.cpu_ms,
+                    if info.adapter.is_empty() {
+                        String::new()
+                    } else {
+                        format!("  ·  {}", info.adapter)
+                    }
                 ),
             ),
             join(vec![

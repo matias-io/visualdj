@@ -99,6 +99,10 @@ pub struct Config {
     pub hud: onset_render::overlay_options::HudOptions,
     pub card: onset_render::overlay_options::CardOptions,
     pub lyrics: onset_render::overlay_options::LyricsOptions,
+    /// An image shown in the middle of the blackout screen (Onset's own copy).
+    pub blackout_logo: Option<PathBuf>,
+    /// Share of the screen the logo may fill.
+    pub blackout_logo_size: f32,
     /// Set when the file on disk failed to parse: saving would destroy the user's edits,
     /// so it is refused until they fix the file.
     #[serde(skip)]
@@ -128,6 +132,8 @@ impl Default for Config {
             hud: onset_render::overlay_options::HudOptions::default(),
             card: onset_render::overlay_options::CardOptions::default(),
             lyrics: onset_render::overlay_options::LyricsOptions::default(),
+            blackout_logo: None,
+            blackout_logo_size: 0.5,
             read_only: false,
         }
     }
@@ -148,6 +154,19 @@ impl Config {
 }
 
 impl Config {
+    /// Copies `source` beside the config as the blackout logo, after checking it is an
+    /// image, and returns the copy's path.
+    pub fn adopt_logo(source: &Path) -> anyhow::Result<PathBuf> {
+        let img = image::open(source)?;
+        let dir = Self::path()
+            .parent()
+            .map_or_else(|| PathBuf::from("."), Path::to_path_buf);
+        std::fs::create_dir_all(&dir)?;
+        let dest = dir.join("blackout-logo.png");
+        img.save(&dest)?;
+        Ok(dest)
+    }
+
     /// `%APPDATA%\Onset\config.toml`, or a relative fallback when no profile dir exists.
     pub fn path() -> PathBuf {
         directories::ProjectDirs::from("", "Onset", "Onset").map_or_else(
@@ -267,6 +286,8 @@ mod tests {
                 offset_s: -0.5,
                 ..Default::default()
             },
+            blackout_logo: Some(PathBuf::from("logo.png")),
+            blackout_logo_size: 0.3,
             read_only: false,
         };
         cfg.save_to(&path).unwrap();

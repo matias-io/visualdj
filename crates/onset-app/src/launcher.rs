@@ -560,8 +560,8 @@ fn show_tab(
     if switch_row(
         ui,
         &mut config.show_hud,
-        "HUD",
-        "Technical readout top left: frame time, rekordbox link, phrase, drop countdown. For you, not the crowd. H toggles it.",
+        "Stats (HUD)",
+        "The small technical text in a corner: frame time, graphics card, rekordbox link, phrase. For you, not the crowd. Press H during the show to hide or show it; place it on the On screen tab.",
         colour,
     ) {
         edits.push(OverlayAction::ShowHud(config.show_hud));
@@ -894,11 +894,38 @@ fn screen_tab(ui: &mut egui::Ui, config: &mut Config, colour: egui::Color32, edi
     });
     ui.label(egui::RichText::new("Label, rating, My Tags, comment and play count come from your rekordbox collection.").small().weak());
 
+    section_help(ui, "Blackout screen", "B during the show blacks the screen out, for breaks and announcements. A logo can sit in the middle.");
+    let logo = config
+        .blackout_logo
+        .as_ref()
+        .and_then(|p| p.file_name())
+        .map_or_else(|| "none".to_string(), |n| n.to_string_lossy().into_owned());
+    ui.label(format!("Logo: {logo}"));
+    ui.label(egui::RichText::new("Drag an image file (PNG or JPEG) onto this window to use it. Transparent PNGs look best on black.").small().weak());
+    changed |= ui
+        .add(egui::Slider::new(&mut config.blackout_logo_size, 0.1..=1.0).text("Logo size").step_by(0.05))
+        .changed();
+    ui.horizontal(|ui| {
+        if ui.button("Preview blackout").on_hover_text("Blacks out the preview; press again to come back.").clicked() {
+            edits.actions.push(OverlayAction::ToggleBlackout);
+        }
+        if config.blackout_logo.is_some() && ui.button("Remove logo").clicked() {
+            edits.push(OverlayAction::BlackoutLogo(None));
+        }
+    });
+
     section_help(ui, "HUD", "A technical readout for you, not the crowd: frame time, the rekordbox link, the phrase and the drop countdown.");
     if switch_row(ui, &mut config.show_hud, "Show the HUD", "H toggles it during the show.", colour) {
         edits.push(OverlayAction::ShowHud(config.show_hud));
     }
     let h = &mut config.hud;
+    egui::ComboBox::from_label("HUD corner")
+        .selected_text(h.corner.label())
+        .show_ui(ui, |ui| {
+            for corner in Corner::ALL {
+                changed |= ui.selectable_value(&mut h.corner, corner, corner.label()).changed();
+            }
+        });
     changed |= ui.add(egui::Slider::new(&mut h.size, 0.6..=2.0).text("Text size").step_by(0.05)).changed();
     egui::Grid::new("hud-fields").num_columns(3).spacing([16.0, 2.0]).show(ui, |ui| {
         changed |= tick(ui, &mut h.scene, "Scene");
@@ -932,7 +959,17 @@ fn lyrics_tab(
     }
     let l = &mut config.lyrics;
     let mut changed = switch_row(ui, &mut l.enabled, "Show lyrics", "Only while a track with lyrics is playing; nothing appears for instrumentals.", colour);
-    changed |= switch_row(ui, &mut l.online, "Find lyrics online", "Looks each track up on LRCLIB, a free lyrics database, the first time it plays, and keeps a copy. Only the title, artist, album and length are sent.", colour);
+    changed |= switch_row(ui, &mut l.online, "Find lyrics online", "Looks each track up on LRCLIB, a free lyrics database, the first time it plays, and keeps a copy. Only the title, artist, album and length are sent. Off: only lyrics already saved are shown.", colour);
+    section_help(ui, "Your library", "Looks up every track now instead of the first time it plays, so lyrics are ready even without internet at the gig. Tracks already checked are instant.");
+    let busy = view.lyrics_progress.starts_with("Checked") || view.lyrics_progress.starts_with("Starting");
+    ui.horizontal(|ui| {
+        if ui.add_enabled(!busy, egui::Button::new("Find lyrics for my whole library")).clicked() {
+            edits.actions.push(OverlayAction::Engine(EngineCommand::PrefetchLyrics));
+        }
+    });
+    if !view.lyrics_progress.is_empty() {
+        ui.label(egui::RichText::new(view.lyrics_progress).small());
+    }
     section_help(ui, "Style", "How the lyrics look. Try each with the preview buttons below.");
     for style in LyricStyle::ALL {
         ui.horizontal(|ui| {

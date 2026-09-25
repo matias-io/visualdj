@@ -8,6 +8,8 @@ use serde::{Deserialize, Serialize};
 pub struct HudOptions {
     /// Text size, 1 = design size (0.6..2).
     pub size: f32,
+    /// Where it sits.
+    pub corner: Corner,
     /// Scene name and output size.
     pub scene: bool,
     /// Frame time and CPU time.
@@ -30,6 +32,7 @@ impl Default for HudOptions {
     fn default() -> Self {
         Self {
             size: 1.0,
+            corner: Corner::TopLeft,
             scene: true,
             performance: true,
             transport: true,
