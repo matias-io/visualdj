@@ -302,6 +302,12 @@ impl ShowDirector {
             self.last_cue = ms.next_cue.map(|c| (c.slot, c.seconds));
             return out;
         }
+        // A loop or a cue jump moves the playhead back (or far ahead): the phrase it lands
+        // in is not a new phrase the music reached, so it raises no phrase event.
+        let jumped = matches!(
+            (self.last_beat, ms.beat_index),
+            (Some(a), Some(b)) if b < a || b > a + 4
+        );
         if let Some(b) = ms.beat_index
             && self.last_beat != Some(b)
         {
@@ -312,7 +318,7 @@ impl ShowDirector {
         }
         self.last_beat = ms.beat_index;
 
-        if ms.phrase != self.last_phrase && !out.contains(&ShowEvent::Track) {
+        if ms.phrase != self.last_phrase && !out.contains(&ShowEvent::Track) && !jumped {
             let into_chorus = ms.phrase == Some(PhraseKind::Chorus);
             if into_chorus && self.last_phrase.is_some() {
                 out.push(ShowEvent::Drop);
@@ -688,7 +694,13 @@ pub struct AutoPilot {
     calm: Option<usize>,
     current: Option<usize>,
     bars: u32,
+    /// The last change came from a drop or breakdown; the next such change waits
+    /// [`MIN_EVENT_BARS`], so a loop over a phrase boundary cannot flip scenes every bar.
+    event_hold: bool,
 }
+
+/// Bars between two scene changes driven by drops or breakdowns.
+const MIN_EVENT_BARS: u32 = 8;
 
 impl Default for AutoPilot {
     fn default() -> Self {
@@ -705,6 +717,7 @@ impl AutoPilot {
             calm: None,
             current: None,
             bars: 0,
+            event_hold: false,
         }
     }
 
@@ -766,6 +779,7 @@ impl AutoPilot {
         }
         self.current = Some(index);
         self.bars = 0;
+        self.event_hold = false;
         Some(SceneChange {
             index,
             transition,
@@ -787,8 +801,10 @@ impl AutoPilot {
         if mode == AutoChange::Off || profiles.is_empty() {
             return None;
         }
+        let held = self.event_hold && self.bars < MIN_EVENT_BARS;
         for e in events {
             match *e {
+                ShowEvent::Drop | ShowEvent::Breakdown if held => {}
                 ShowEvent::Track => {
                     let ranked = Self::ranked(profiles, allowed, vibe_now);
                     self.base = self.pick(&ranked, self.current, chaos);
@@ -817,10 +833,14 @@ impl AutoPilot {
                     } else {
                         Transition::ZoomBlur
                     };
-                    return self.change(self.drop.or(self.base), t, 0.6);
+                    let change = self.change(self.drop.or(self.base), t, 0.6);
+                    self.event_hold = true;
+                    return change;
                 }
                 ShowEvent::Breakdown if mode != AutoChange::Tracks => {
-                    return self.change(self.calm.or(self.base), Transition::Crossfade, 4.0);
+                    let change = self.change(self.calm.or(self.base), Transition::Crossfade, 4.0);
+                    self.event_hold = true;
+                    return change;
                 }
                 ShowEvent::Phrase(_) if mode == AutoChange::Phrases && self.bars >= MIN_BARS => {
                     // Back to the base after a drop section, or a fresh take on the vibe.
@@ -1167,5 +1187,38 @@ mod tests {
         for p in [FxSettings::CHILL, FxSettings::CLUB, FxSettings::FESTIVAL] {
             assert!(p.shake <= 0.45 && p.flashes <= 0.75, "{p:?}");
         }
+    }
+    #[test]
+    fn a_loop_jumping_back_over_a_phrase_boundary_is_not_a_drop() {
+        let s = FxSettings::CLUB;
+        let mut d = ShowDirector::new();
+        d.update(&playing(Some(PhraseKind::Chorus), 200), 0.016, &s);
+        d.update(&playing(Some(PhraseKind::Outro), 204), 0.016, &s);
+        // The loop sends the playhead back into the chorus.
+        let events = d.update(&playing(Some(PhraseKind::Chorus), 199), 0.016, &s);
+        assert!(!events.contains(&ShowEvent::Drop), "{events:?}");
+        assert!(!events.iter().any(|e| matches!(e, ShowEvent::Phrase(_))), "{events:?}");
+    }
+
+    #[test]
+    fn autopilot_holds_a_scene_through_rapid_drops_and_breakdowns() {
+        let mut ap = AutoPilot::new();
+        let p = profiles();
+        let allowed = vec![true; p.len()];
+        let v = Vibe {
+            energy: 0.5,
+            darkness: 0.5,
+        };
+        let go = |ap: &mut AutoPilot, e: ShowEvent| {
+            ap.on_events(&[e], v, &p, &allowed, AutoChange::Phrases, 0.5)
+        };
+        assert!(go(&mut ap, ShowEvent::Track).is_some());
+        assert!(go(&mut ap, ShowEvent::Drop).is_some(), "the first drop still lands");
+        assert!(go(&mut ap, ShowEvent::Breakdown).is_none(), "too soon after the drop");
+        assert!(go(&mut ap, ShowEvent::Drop).is_none(), "too soon again");
+        for _ in 0..8 {
+            go(&mut ap, ShowEvent::Bar);
+        }
+        assert!(go(&mut ap, ShowEvent::Breakdown).is_some(), "eight bars later it may change");
     }
 }

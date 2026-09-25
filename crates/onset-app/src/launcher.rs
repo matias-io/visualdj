@@ -327,7 +327,9 @@ pub fn launcher_page(
             });
             ui.separator();
             let footer = 70.0;
+            // Each tab keeps its own scroll position, so a tab never opens half way down.
             egui::ScrollArea::vertical()
+                .id_salt(tab.label())
                 .auto_shrink([false, false])
                 .max_height((ui.available_height() - footer).max(100.0))
                 .show(ui, |ui| match *tab {

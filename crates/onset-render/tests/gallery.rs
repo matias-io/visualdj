@@ -350,18 +350,24 @@ fn bench_scenes_headless() {
         let view = h.view();
         let mut run = |frames: u32, start: f32| {
             let t0 = std::time::Instant::now();
+            let mut cpu = 0.0f64;
             for f in 0..frames {
                 let t = start + f as f32 / 60.0;
                 let ms = state(t % 3.0, 1.6, 1.0, 1.0);
                 let mut enc = h.gpu.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("b") });
+                let c0 = std::time::Instant::now();
                 r.render(&h.gpu, &mut enc, &view, &ms, 1000.0 + t);
+                cpu += c0.elapsed().as_secs_f64() * 1000.0;
                 h.gpu.queue.submit([enc.finish()]);
                 let _ = h.gpu.device.poll(wgpu::PollType::wait_indefinitely());
             }
-            t0.elapsed().as_secs_f64() * 1000.0 / f64::from(frames)
+            (
+                t0.elapsed().as_secs_f64() * 1000.0 / f64::from(frames),
+                cpu / f64::from(frames),
+            )
         };
         run(30, 0.0); // warm up and finish the scene crossfade
-        let ms = run(120, 1.0);
-        println!("{name:>10}: {ms:6.2} ms");
+        let (ms, cpu) = run(120, 1.0);
+        println!("{name:>10}: {ms:6.2} ms  (renderer CPU {cpu:5.2} ms)");
     }
 }

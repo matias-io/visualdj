@@ -69,10 +69,11 @@ fn fs_transition(in: VsOut) -> @location(0) vec4<f32> {
     var col: vec3<f32>;
     switch kind {
         case 1u: {
-            // Flash cut: bleach to white, swap at the peak, come back.
+            // Light burst: the scenes cross through a soft bloom of light. It used to bleach
+            // to pure white, which read as a harsh flash; now it brightens, never blinds.
             let peak = 1.0 - abs(t * 2.0 - 1.0);
-            let base = select(sa(in.uv), sb(in.uv), t > 0.5);
-            col = base + vec3<f32>(peak * peak * 4.0);
+            let base = mix(sa(in.uv), sb(in.uv), smoothstep(0.35, 0.65, t));
+            col = base * (1.0 + 0.6 * peak) + vec3<f32>(peak * peak * 0.8);
         }
         case 2u: {
             // Zoom blur: both scenes smear towards the centre while they cross.

@@ -162,7 +162,7 @@ pub fn monitor_label(monitors: &[MonitorInfo], choice: &MonitorChoice) -> String
     match choice {
         MonitorChoice::Primary => "Primary".to_string(),
         MonitorChoice::Index(i) => monitors.get(*i).map_or_else(
-            || format!("#{i} (not connected)"),
+            || format!("#{i} is not connected: the show opens on the primary screen"),
             |m| format!("#{i} {}", monitor_detail(m)),
         ),
         MonitorChoice::NameContains(s) => format!("name contains {s:?}"),
@@ -594,7 +594,7 @@ mod tests {
         );
         assert_eq!(
             monitor_label(&m, &MonitorChoice::Index(5)),
-            "#5 (not connected)"
+            "#5 is not connected: the show opens on the primary screen"
         );
         assert_eq!(monitor_label(&m, &MonitorChoice::Primary), "Primary");
     }

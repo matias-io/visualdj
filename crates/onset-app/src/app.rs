@@ -241,6 +241,32 @@ fn key_code(event: &KeyEvent) -> Option<KeyCode> {
     }
 }
 
+/// The launcher's size in logical pixels on a screen of `screen` logical pixels: the
+/// design size, shrunk to leave room for the taskbar and title bar on smaller screens.
+fn fit_launcher(screen: (f64, f64)) -> (f64, f64) {
+    (
+        LAUNCHER_SIZE.0.min(screen.0 * 0.94),
+        LAUNCHER_SIZE.1.min(screen.1 * 0.86),
+    )
+}
+
+
+/// Size and centred position of the launcher on monitor `m`.
+fn launcher_placement(monitor: &MonitorHandle) -> (LogicalSize<f64>, winit::dpi::PhysicalPosition<i32>) {
+    let scale = monitor.scale_factor();
+    let phys = monitor.size();
+    let (width, height) =
+        fit_launcher((f64::from(phys.width) / scale, f64::from(phys.height) / scale));
+    let origin = monitor.position();
+    // Centred horizontally; a little above centre, so the title bar clears the top.
+    let left = origin.x + ((f64::from(phys.width) - width * scale) / 2.0) as i32;
+    let top = origin.y + ((f64::from(phys.height) - height * scale) / 2.5).max(0.0) as i32;
+    (
+        LogicalSize::new(width, height),
+        winit::dpi::PhysicalPosition::new(left, top),
+    )
+}
+
 /// The launcher's plain window, or borderless fullscreen on `monitor` (always on top, so
 /// nothing covers the projector), or a plain 1280x720 window when the output is not going
 /// to a dedicated display.
@@ -248,12 +274,19 @@ fn window_attributes(
     launcher: bool,
     fullscreen: bool,
     monitor: Option<&MonitorHandle>,
+    home: Option<&MonitorHandle>,
 ) -> WindowAttributes {
     if launcher {
-        return WindowAttributes::default()
+        let attrs = WindowAttributes::default()
             .with_title("Onset")
-            .with_decorations(true)
-            .with_inner_size(LogicalSize::new(LAUNCHER_SIZE.0, LAUNCHER_SIZE.1));
+            .with_decorations(true);
+        return match home {
+            Some(m) => {
+                let (size, pos) = launcher_placement(m);
+                attrs.with_inner_size(size).with_position(pos)
+            }
+            None => attrs.with_inner_size(LogicalSize::new(LAUNCHER_SIZE.0, LAUNCHER_SIZE.1)),
+        };
     }
     let attrs = WindowAttributes::default()
         .with_title("Onset")
@@ -403,10 +436,12 @@ impl OnsetApp {
         }
 
         let launcher = self.mode == Mode::Launcher;
+        let home = event_loop.primary_monitor();
         let window = Arc::new(event_loop.create_window(window_attributes(
             launcher,
             self.fullscreen,
             monitor.as_ref(),
+            home.as_ref(),
         ))?);
         window.set_cursor_visible(launcher);
         self.monitor = monitor;
@@ -813,9 +848,18 @@ impl OnsetApp {
             s.window.set_fullscreen(None);
             s.window.set_window_level(WindowLevel::Normal);
             s.window.set_decorations(true);
-            let _ = s
-                .window
-                .request_inner_size(LogicalSize::new(LAUNCHER_SIZE.0, LAUNCHER_SIZE.1));
+            match s.window.current_monitor() {
+                Some(m) => {
+                    let (size, pos) = launcher_placement(&m);
+                    let _ = s.window.request_inner_size(size);
+                    s.window.set_outer_position(pos);
+                }
+                None => {
+                    let _ = s
+                        .window
+                        .request_inner_size(LogicalSize::new(LAUNCHER_SIZE.0, LAUNCHER_SIZE.1));
+                }
+            }
             s.overlay.set_page(&s.window, Page::Launcher);
         }
         tracing::info!("back to the launcher");
@@ -1079,5 +1123,20 @@ impl ApplicationHandler for OnsetApp {
             event_loop.exit();
         }
         event_loop.set_control_flow(ControlFlow::Poll);
+    }
+}
+
+#[cfg(test)]
+mod placement_tests {
+    use super::*;
+
+    #[test]
+    fn the_launcher_fits_a_small_screen_and_keeps_its_size_on_a_big_one() {
+        // A 2400x1600 laptop at 150 % is 1600x1067 logical: too short for 820 + chrome.
+        let (w, h) = fit_launcher((1600.0, 1066.7));
+        assert!((w - LAUNCHER_SIZE.0).abs() < 1e-6 && h < 1066.7 * 0.87 && h > 800.0, "{w} {h}");
+        assert_eq!(fit_launcher((3840.0, 2160.0)), LAUNCHER_SIZE);
+        let (w, _) = fit_launcher((1280.0, 800.0));
+        assert!(w < 1280.0);
     }
 }
