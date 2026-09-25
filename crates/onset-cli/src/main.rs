@@ -154,6 +154,10 @@ enum Command {
         /// Seconds allowed for each step before the calibrator carries on without it
         #[arg(long, default_value_t = 180)]
         step_seconds: u64,
+        /// Repair the existing file for the running version (keep only the pointers every
+        /// deck shares) instead of calibrating; needs no deck interaction
+        #[arg(long)]
+        refine: bool,
     },
 }
 
@@ -239,11 +243,14 @@ fn main() -> anyhow::Result<()> {
         Command::Calibrate {
             out_dir,
             step_seconds,
+            refine,
         } => {
-            calibrate::calibrate(
-                &out_dir.unwrap_or_else(calibrate::default_out_dir),
-                step_seconds,
-            )?;
+            let dir = out_dir.unwrap_or_else(calibrate::default_out_dir);
+            if refine {
+                calibrate::refine(&dir)?;
+            } else {
+                calibrate::calibrate(&dir, step_seconds)?;
+            }
         }
         #[cfg(not(windows))]
         Command::Calibrate { .. } => anyhow::bail!("calibrate needs Windows"),

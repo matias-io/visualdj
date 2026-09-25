@@ -180,6 +180,11 @@ impl<M: Mem> ChainReader<M> {
         }
     }
 
+    /// Position fields found by the signature, in deck order.
+    pub fn deck_positions(&self) -> &[u64] {
+        &self.found
+    }
+
     /// Records the position fields a signature scan found, in deck order.
     pub fn set_found_decks(&mut self, positions: Vec<u64>) {
         self.found = positions;
@@ -199,6 +204,17 @@ impl<M: Mem> ChainReader<M> {
         let sig = self.offsets.signature.as_ref()?;
         let first = sig.anchors.first()?;
         Some(self.mem.module_base().wrapping_add(first.module_offset).to_le_bytes())
+    }
+
+    /// Replaces the signature's anchors (a runtime repair of a file that finds one deck).
+    pub fn set_anchors(&mut self, anchors: Vec<super::offsets::Anchor>) {
+        if let Some(sig) = self.offsets.signature.as_mut() {
+            sig.anchors = anchors;
+        }
+    }
+
+    pub fn signature(&self) -> Option<&DeckSignature> {
+        self.offsets.signature.as_ref()
     }
 
     /// Confirms hits of the needle and remembers the decks they identify.
@@ -576,7 +592,8 @@ mod live {
     use super::super::REKORDBOX_EXE;
     use super::super::handles::open_audio_files;
     use super::super::process::Process;
-    use super::super::scan::find_bytes;
+    use super::super::calibrate::shared_signature;
+    use super::super::scan::{find_bytes, find_u64_values};
     use super::{
         ChainReader, DeckChooser, DeckFiles, DeckState, Mem, PlayTracker, snapshot_from_deck,
     };
@@ -646,7 +663,47 @@ mod live {
         let hits = find_bytes(reader.mem(), &needle, SIGNATURE_HITS);
         let n = reader.adopt_hits(&hits);
         tracing::info!(hits = hits.len(), decks = n, "signature scan");
+        if n == 1 {
+            return repair_signature(reader).unwrap_or(n);
+        }
         n
+    }
+
+    /// A signature made from one deck can hold pointers only that deck has, so the other
+    /// decks never match and a loaded track has no deck to go to. Keep only the anchors the
+    /// deck objects share, if that finds more decks.
+    fn repair_signature(reader: &mut ChainReader<Process>) -> Option<usize> {
+        let sig = reader.signature()?.clone();
+        let primary = reader.deck_positions().first().copied()?;
+        let base = reader.mem().module_base;
+        let values: Vec<u64> = sig.anchors.iter().map(|a| base + a.module_offset).collect();
+        let hits = find_u64_values(reader.mem(), &values, 256);
+        let shared = shared_signature(reader.mem(), primary, &sig.anchors, &hits);
+        if shared.decks.len() < 2 || shared.anchors.len() < 3 {
+            tracing::warn!("only one rekordbox deck found; recalibrate if tracks show one behind");
+            return None;
+        }
+        let mut anchors = shared.anchors;
+        // Scan for the anchor with the fewest hits that still covers every deck.
+        let count = |a: &super::super::offsets::Anchor| {
+            sig.anchors
+                .iter()
+                .position(|b| b == a)
+                .map_or(usize::MAX, |i| hits[i].len())
+        };
+        anchors.sort_by_key(|a| {
+            let n = count(a);
+            (n < shared.decks.len(), n)
+        });
+        tracing::warn!(
+            kept = anchors.len(),
+            of = sig.anchors.len(),
+            decks = shared.decks.len(),
+            "signature repaired at runtime; run `onset-cli calibrate --refine` to save it"
+        );
+        reader.set_anchors(anchors);
+        reader.set_found_decks(shared.decks);
+        Some(reader.deck_count())
     }
     use crate::memory::offsets::Offsets;
     use crate::source::{SourceStatus, TransportSource};
@@ -716,7 +773,7 @@ mod live {
                 return;
             };
             let version = process.file_version().unwrap_or_else(|| "unknown".into());
-            if let Some(offsets) = Offsets::for_version(&self.offsets_dir, &version) {
+            if let Some(offsets) = Offsets::find_version(&self.offsets_dir, &version) {
                 tracing::info!(pid = process.pid, %version, "rekordbox connected");
                 let pid = process.pid;
                 let mut reader = Box::new(ChainReader::new(process, offsets));

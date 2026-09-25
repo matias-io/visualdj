@@ -68,6 +68,17 @@ pub fn calibrated_versions(dir: &Path) -> Vec<String> {
     out
 }
 
+/// Versions calibrated in any folder Onset loads offsets from.
+pub fn all_calibrated_versions(primary: &Path) -> Vec<String> {
+    let mut out: Vec<String> = onset_transport::memory::offsets::Offsets::search_dirs(primary)
+        .iter()
+        .flat_map(|d| calibrated_versions(d))
+        .collect();
+    out.sort();
+    out.dedup();
+    out
+}
+
 /// What the launcher shows about calibration.
 pub struct CalibrationView<'a> {
     pub running: bool,

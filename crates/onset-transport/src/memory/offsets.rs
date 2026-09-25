@@ -1,6 +1,6 @@
 //! Per-version pointer chains: the file the calibrator writes and the reader loads.
 //! One TOML file per rekordbox version under `offsets/`, e.g. `offsets/7.2.18.toml`.
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
@@ -103,6 +103,37 @@ impl Offsets {
 
     pub fn load(path: &Path) -> anyhow::Result<Self> {
         Self::from_toml(&std::fs::read_to_string(path)?)
+    }
+
+    /// Folders searched for offsets, in order: `primary` (where calibration writes), then
+    /// `offsets/` beside the executable, the repository's `offsets/` when running from
+    /// `target/<profile>/`, and `offsets/` in the working directory.
+    pub fn search_dirs(primary: &Path) -> Vec<PathBuf> {
+        let mut dirs = vec![primary.to_path_buf()];
+        if let Ok(exe) = std::env::current_exe()
+            && let Some(dir) = exe.parent()
+        {
+            dirs.push(dir.join("offsets"));
+            if let Some(repo) = dir.parent().and_then(Path::parent) {
+                dirs.push(repo.join("offsets"));
+            }
+        }
+        dirs.push(PathBuf::from("offsets"));
+        let mut seen = Vec::new();
+        dirs.retain(|d| {
+            let key = std::fs::canonicalize(d).unwrap_or_else(|_| d.clone());
+            let fresh = !seen.contains(&key);
+            seen.push(key);
+            fresh
+        });
+        dirs
+    }
+
+    /// The first `<dir>/<version>.toml` along `search_dirs(primary)` that parses.
+    pub fn find_version(primary: &Path, version: &str) -> Option<Self> {
+        Self::search_dirs(primary)
+            .iter()
+            .find_map(|d| Self::for_version(d, version))
     }
 
     /// `<dir>/<version>.toml` when it exists and parses.

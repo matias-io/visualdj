@@ -25,7 +25,7 @@ use winit::window::{Fullscreen, Window, WindowAttributes, WindowId, WindowLevel}
 use crate::bench::BenchStats;
 use crate::config::{Config, MonitorChoice, PresentModeChoice};
 use crate::engine::{Engine, EngineCommand, EngineStatus};
-use crate::launcher::{CalibrationView, LAUNCHER_SIZE, calibrated_versions};
+use crate::launcher::{CalibrationView, LAUNCHER_SIZE, all_calibrated_versions};
 use crate::monitors::{MonitorInfo, choose};
 use crate::overlay::{DrawResult, DrawTarget, Overlay, OverlayAction, OverlayView, Page};
 
@@ -307,7 +307,7 @@ fn draw_overlay(
 impl OnsetApp {
     pub fn new(opts: AppOptions) -> Self {
         let screenshot_pending = opts.screenshot.clone();
-        let versions = calibrated_versions(&opts.offsets_dir);
+        let versions = all_calibrated_versions(&opts.offsets_dir);
         let mode = if opts.launcher {
             Mode::Launcher
         } else {
@@ -489,7 +489,7 @@ impl OnsetApp {
                 Err(mpsc::TryRecvError::Empty) => break,
                 Err(mpsc::TryRecvError::Disconnected) => {
                     self.calibration = None;
-                    self.versions = calibrated_versions(&self.opts.offsets_dir);
+                    self.versions = all_calibrated_versions(&self.opts.offsets_dir);
                     break;
                 }
             }

@@ -1,0 +1,41 @@
+rekordbox_version = "7.2.19"
+platform = "windows"
+position_format = "i32"
+position_rate_hz = 0.0
+decks = []
+provenance = "onset calibrate at unix 1790311719"
+
+[signature]
+max_decks = 4
+
+[[signature.anchors]]
+offset = -420
+module_offset = 92203208
+
+[[signature.anchors]]
+offset = -412
+module_offset = 92203720
+
+[[signature.anchors]]
+offset = -364
+module_offset = 92203640
+
+[[signature.anchors]]
+offset = -356
+module_offset = 92203152
+
+[[signature.anchors]]
+offset = -348
+module_offset = 92203320
+
+[[signature.anchors]]
+offset = -300
+module_offset = 92203168
+
+[[signature.anchors]]
+offset = -340
+module_offset = 92203160
+
+[[signature.anchors]]
+offset = -36
+module_offset = 92088496

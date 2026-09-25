@@ -19,10 +19,13 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, bail};
 
 use super::REKORDBOX_EXE;
+use super::calibrate::{rarest_first, shared_signature};
 use super::offsets::{Anchor, DeckSignature, Offsets, PositionFormat};
 use super::process::Process;
 use super::reader::Mem;
-use super::scan::{Counter, CounterFormat, confirm_counters, find_bytes, find_sample_counters};
+use super::scan::{
+    Counter, CounterFormat, confirm_counters, find_bytes, find_sample_counters, find_u64_values,
+};
 
 /// A scan counts as "a deck is playing" once this many counters advance.
 const MIN_COUNTERS: usize = 8;
@@ -367,6 +370,82 @@ fn best_signature(
     ))
 }
 
+/// Hits kept per anchor value when looking for sibling decks.
+const SIBLING_HITS: usize = 256;
+
+/// Cuts `anchors` (seen around the deck at `primary`) down to those every deck object of
+/// the same class holds, so the runtime scan finds all decks, not only the calibrated one.
+fn refine(
+    s: &mut Session<'_>,
+    p: &Process,
+    primary: u64,
+    anchors: &[Anchor],
+) -> anyhow::Result<(Vec<Anchor>, Vec<u64>)> {
+    let values: Vec<u64> = anchors
+        .iter()
+        .map(|a| p.module_base + a.module_offset)
+        .collect();
+    let hits = find_u64_values(p, &values, SIBLING_HITS);
+    let shared = shared_signature(p, primary, anchors, &hits);
+    let counts: Vec<usize> = shared
+        .anchors
+        .iter()
+        .map(|a| {
+            anchors
+                .iter()
+                .position(|b| b == a)
+                .map_or(0, |i| hits[i].len())
+        })
+        .collect();
+    let mut kept = shared.anchors;
+    rarest_first(&mut kept, &counts, shared.decks.len());
+    s.say(format!(
+        "  {} deck object(s) share {} of {} anchor(s)",
+        shared.decks.len(),
+        kept.len(),
+        anchors.len()
+    ));
+    if kept.len() < MIN_ANCHORS {
+        bail!("the deck objects share too few pointers to recognise them");
+    }
+    if shared.decks.len() < 2 {
+        s.say("  only one deck object found; decks that have never loaded a track may not exist yet");
+    }
+    Ok((kept, shared.decks))
+}
+
+/// Re-derives the shared anchors of an existing offsets file against the running rekordbox,
+/// without any deck interaction. Fixes files that only find the deck they were made from.
+pub fn refine_existing(dir: &Path, s: &mut Session<'_>) -> anyhow::Result<PathBuf> {
+    let p = Process::open(REKORDBOX_EXE)?;
+    let version = p.file_version().context("rekordbox version unknown")?;
+    let path = dir.join(format!("{version}.toml"));
+    let mut offsets = Offsets::load(&path)
+        .with_context(|| format!("no offsets for rekordbox {version} in {}", dir.display()))?;
+    let sig = offsets
+        .signature
+        .clone()
+        .context("this offsets file has no signature to refine")?;
+    let needle = (p.module_base + sig.anchors[0].module_offset).to_le_bytes();
+    let found: Vec<u64> = find_bytes(&p, &needle, SIBLING_HITS)
+        .iter()
+        .filter_map(|h| h.checked_add_signed(-sig.anchors[0].offset))
+        .filter(|pos| super::reader::signature_matches(&p, &sig, *pos))
+        .collect();
+    let primary = *found
+        .first()
+        .context("the current signature finds no deck; recalibrate")?;
+    s.say(format!(
+        "rekordbox {version}: the current signature finds {} deck(s)",
+        found.len()
+    ));
+    let (anchors, _) = refine(s, &p, primary, &sig.anchors)?;
+    offsets.signature = Some(DeckSignature { anchors, ..sig });
+    offsets.save(&path)?;
+    s.say(format!("wrote {}", path.display()));
+    Ok(path)
+}
+
 /// Runs the guided session against the running rekordbox and writes
 /// `<out_dir>/<version>.toml`, returning its path.
 pub fn calibrate(out_dir: &Path, s: &mut Session<'_>) -> anyhow::Result<PathBuf> {
@@ -379,7 +458,9 @@ pub fn calibrate(out_dir: &Path, s: &mut Session<'_>) -> anyhow::Result<PathBuf>
     s.say("This takes a minute or two: play a track, pause it, play it again.");
     s.say("Step 1: load a track on any deck and press play.");
     let counters = absolute_position_counters(s, &p)?;
-    let (signature, counter) = best_signature(s, &p, &counters)?;
+    let (mut signature, counter) = best_signature(s, &p, &counters)?;
+    let (anchors, _) = refine(s, &p, counter.addr, &signature.anchors)?;
+    signature.anchors = anchors;
 
     // The signature must find the deck it came from when scanned for at runtime.
     let needle = (p.module_base + signature.anchors[0].module_offset).to_le_bytes();

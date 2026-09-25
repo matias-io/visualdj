@@ -322,6 +322,29 @@ pub fn read_time_hit(p: &Process, hit: &TimeHit) -> Option<f64> {
 }
 
 /// Every occurrence of `needle` in heap memory (capped).
+/// Every 8-byte-aligned heap address holding one of `values`, in one pass over memory:
+/// `result[i]` lists the addresses holding `values[i]`, at most `cap_each` of them.
+pub fn find_u64_values(p: &Process, values: &[u64], cap_each: usize) -> Vec<Vec<u64>> {
+    let index: std::collections::HashMap<u64, usize> =
+        values.iter().enumerate().map(|(i, v)| (*v, i)).collect();
+    let mut out = vec![Vec::new(); values.len()];
+    for r in heap_regions(p) {
+        let Some(bytes) = p.read_region(&r) else {
+            continue;
+        };
+        // Regions start page-aligned, so offset 0 is 8-aligned.
+        for (k, chunk) in bytes.as_chunks::<8>().0.iter().enumerate() {
+            let v = u64::from_le_bytes(*chunk);
+            if let Some(&i) = index.get(&v)
+                && out[i].len() < cap_each
+            {
+                out[i].push(r.base + (k * 8) as u64);
+            }
+        }
+    }
+    out
+}
+
 pub fn find_bytes(p: &Process, needle: &[u8], cap: usize) -> Vec<u64> {
     let mut out = Vec::new();
     for r in heap_regions(p) {
