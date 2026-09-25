@@ -11,7 +11,7 @@ use winit::window::Window;
 
 use crate::config::{Config, MonitorChoice, PresentModeChoice};
 use crate::engine::{EngineCommand, EngineStatus, TrackEntry};
-use crate::launcher::{CalibrationView, launcher_page};
+use crate::launcher::{CalibrationView, Tab, launcher_page};
 use crate::monitors::MonitorInfo;
 
 /// Most tracks the search list shows at once.
@@ -35,6 +35,11 @@ pub enum OverlayAction {
     Calibrate,
     CancelCalibration,
     Quit,
+    /// The look settings changed (preset, effects, quality, Auto mode, rotation).
+    Look,
+    /// Play a show event on the preview without music.
+    Preview(onset_core::show::ShowEvent),
+    NextScene,
 }
 
 /// Which page the window shows over the scene.
@@ -59,6 +64,15 @@ pub struct OverlayView<'a> {
     pub playing: bool,
     pub frame_ms: f32,
     pub calibration: CalibrationView<'a>,
+    /// The effects on screen this frame and the audio features, for the launcher's meters.
+    pub fx: onset_core::show::Fx,
+    pub audio: onset_core::audio_features::AudioFeatures,
+    pub vibe: onset_core::show::Vibe,
+    pub palette: [[f32; 3]; 5],
+    pub track: Option<&'a onset_core::track::TrackMeta>,
+    /// Graphics adapters that could render, and the one in use.
+    pub adapters: &'a [String],
+    pub adapter: &'a str,
 }
 
 /// Where a frame's panel is drawn.
@@ -98,6 +112,7 @@ pub struct Overlay {
     state: egui_winit::State,
     renderer: EguiRenderer,
     page: Page,
+    tab: Tab,
     search: String,
     endpoints: Vec<String>,
     rate: f32,
@@ -127,7 +142,7 @@ pub fn monitor_detail(m: &MonitorInfo) -> String {
     s
 }
 
-fn monitor_label(monitors: &[MonitorInfo], choice: &MonitorChoice) -> String {
+pub fn monitor_label(monitors: &[MonitorInfo], choice: &MonitorChoice) -> String {
     match choice {
         MonitorChoice::Primary => "Primary".to_string(),
         MonitorChoice::Index(i) => monitors.get(*i).map_or_else(
@@ -162,6 +177,7 @@ impl Overlay {
             state,
             renderer,
             page: Page::Hidden,
+            tab: Tab::default(),
             search: String::new(),
             endpoints: onset_audio::capture::list_endpoints(),
             rate: 1.0,
@@ -238,8 +254,8 @@ impl Overlay {
                     &ctx,
                     config,
                     view,
-                    &view.calibration,
                     &self.endpoints,
+                    &mut self.tab,
                     &mut edits,
                 );
             }

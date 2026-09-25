@@ -192,6 +192,8 @@ pub struct ShowDirector {
     last_cue: Option<(u8, f32)>,
     /// Colour of the cue that was ahead last frame.
     cue_color: Option<[u8; 3]>,
+    /// Events injected from outside (the launcher's preview buttons), handled next update.
+    injected: Vec<ShowEvent>,
     hue_target: f32,
     invert_target: f32,
     invert_hold_s: f32,
@@ -219,6 +221,7 @@ impl ShowDirector {
             last_track: None,
             last_cue: None,
             cue_color: None,
+            injected: Vec::new(),
             hue_target: 0.0,
             invert_target: 0.0,
             invert_hold_s: 0.0,
@@ -230,6 +233,11 @@ impl ShowDirector {
 
     pub fn fx(&self) -> Fx {
         self.fx
+    }
+
+    /// Makes `event` happen on the next update, as if the music had caused it.
+    pub fn inject(&mut self, event: ShowEvent) {
+        self.injected.push(event);
     }
 
     fn beat_s(ms: &MusicState) -> f32 {
@@ -294,7 +302,8 @@ impl ShowDirector {
     #[allow(clippy::too_many_lines)] // one table of reactions, read top to bottom
     pub fn update(&mut self, ms: &MusicState, dt: f32, s: &FxSettings) -> Vec<ShowEvent> {
         let dt = dt.clamp(0.0, 0.1);
-        let events = self.events(ms);
+        let mut events = self.events(ms);
+        events.append(&mut self.injected);
         let beat_s = Self::beat_s(ms);
         let fx = &mut self.fx;
 

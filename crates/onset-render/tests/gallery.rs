@@ -197,26 +197,26 @@ impl Gallery {
 
 #[test]
 fn every_scene_reacts_to_the_music_and_the_drop() {
-    let mut g = Gallery::new();
-    let names = g.r.scene_names();
+    let mut gallery = Gallery::new();
+    let names = gallery.r.scene_names();
     let drop_at = 1.6;
     let only = std::env::var("ONSET_GALLERY_ONLY").ok();
     for name in names {
         if only.as_deref().is_some_and(|o| !o.split(',').any(|x| x == name)) {
             continue;
         }
-        assert!(g.r.set_scene(&name));
+        assert!(gallery.r.set_scene(&name));
         // Let the crossfade into this scene finish while idle.
         let mut idle = MusicState::default();
         let mut px_idle = Vec::new();
         for f in 0..40 {
             let t = f as f32 / FPS;
             idle.time_s = f64::from(t);
-            if let Some(px) = g.frame(&idle, 100.0 + t, f == 39) {
+            if let Some(px) = gallery.frame(&idle, 100.0 + t, f == 39) {
                 px_idle = px;
             }
         }
-        g.save(&format!("{name}_0_idle"), &px_idle);
+        gallery.save(&format!("{name}_0_idle"), &px_idle);
         let (_, spread) = luma_stats(&px_idle);
         assert!(spread > 3.0, "{name}: idle frame is flat (spread {spread:.1})");
 
@@ -228,7 +228,7 @@ fn every_scene_reacts_to_the_music_and_the_drop() {
             let ms = state(t, drop_at, 1.0, 1.0);
             let want = |at: f32| (t - at).abs() < 0.5 / FPS;
             let read = want(1.4) || want(drop_at + 0.1) || want(2.8);
-            if let Some(px) = g.frame(&ms, 200.0 + t, read) {
+            if let Some(px) = gallery.frame(&ms, 200.0 + t, read) {
                 if want(1.4) {
                     build = px;
                 } else if want(drop_at + 0.1) {
@@ -238,12 +238,12 @@ fn every_scene_reacts_to_the_music_and_the_drop() {
                 }
             }
         }
-        g.save(&format!("{name}_1_build"), &build);
-        g.save(&format!("{name}_2_drop"), &drop);
-        g.save(&format!("{name}_3_chorus"), &chorus);
-        g.sheet(&name, [&px_idle, &build, &drop, &chorus]);
-        let d = diff(&build, &drop);
-        assert!(d > 4.0, "{name}: the drop barely changes the picture ({d:.1})");
+        gallery.save(&format!("{name}_1_build"), &build);
+        gallery.save(&format!("{name}_2_drop"), &drop);
+        gallery.save(&format!("{name}_3_chorus"), &chorus);
+        gallery.sheet(&name, [&px_idle, &build, &drop, &chorus]);
+        let change = diff(&build, &drop);
+        assert!(change > 4.0, "{name}: the drop barely changes the picture ({change:.1})");
 
         // Same moment, bass only versus treble only: the picture must differ. The classic
         // scenes predate the frequency split and stay out of Auto mode.
@@ -253,9 +253,9 @@ fn every_scene_reacts_to_the_music_and_the_drop() {
         let t = 2.0;
         let bass_only = state(t, drop_at, 1.0, 0.0);
         let treble_only = state(t, drop_at, 0.0, 1.0);
-        let a = g.frame(&bass_only, 300.0, true).unwrap();
-        let b = g.frame(&treble_only, 300.0, true).unwrap();
-        let d = diff(&a, &b);
-        assert!(d > 1.0, "{name}: bass and treble look the same ({d:.2})");
+        let a = gallery.frame(&bass_only, 300.0, true).unwrap();
+        let b = gallery.frame(&treble_only, 300.0, true).unwrap();
+        let change = diff(&a, &b);
+        assert!(change > 1.0, "{name}: bass and treble look the same ({change:.2})");
     }
 }

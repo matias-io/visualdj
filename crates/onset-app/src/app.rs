@@ -85,6 +85,8 @@ pub struct OnsetApp {
     monitor: Option<MonitorHandle>,
     monitor_handles: Vec<MonitorHandle>,
     monitor_infos: Vec<MonitorInfo>,
+    /// Graphics adapters found at startup, for the launcher's picker.
+    adapters: Vec<String>,
     calibration: Option<CalibrationRun>,
     calibration_lines: Vec<String>,
     versions: Vec<String>,
@@ -263,10 +265,12 @@ fn window_attributes(
 }
 
 /// Runs the settings panel for this frame when it is open.
+#[allow(clippy::too_many_arguments)]
 fn draw_overlay(
     s: &mut Surface,
     opts: &mut AppOptions,
     monitors: &[MonitorInfo],
+    adapters: &[String],
     calibration: CalibrationView<'_>,
     enc: &mut wgpu::CommandEncoder,
     view: &wgpu::TextureView,
@@ -286,6 +290,7 @@ fn draw_overlay(
             None => (idle, &[], false),
         };
     let scenes = s.renderer.scene_names();
+    let adapter = s.gpu.adapter_name();
     let overlay_view = OverlayView {
         monitors,
         scenes: &scenes,
@@ -298,6 +303,13 @@ fn draw_overlay(
         playing: ms.playing,
         frame_ms: s.renderer.hud().last_frame_ms(),
         calibration,
+        fx: s.renderer.fx(),
+        audio: ms.audio,
+        vibe: s.renderer.vibe(),
+        palette: s.renderer.palette(),
+        track: ms.track.as_ref(),
+        adapters,
+        adapter: &adapter,
     };
     let target = DrawTarget {
         window: &s.window,
@@ -330,6 +342,7 @@ impl OnsetApp {
             monitor: None,
             monitor_handles: Vec::new(),
             monitor_infos: Vec::new(),
+            adapters: Gpu::adapter_names(),
             calibration: None,
             calibration_lines: Vec::new(),
             versions,
@@ -389,7 +402,7 @@ impl OnsetApp {
         let launcher = self.mode == Mode::Launcher;
         let instance = Gpu::new_instance();
         let surface = instance.create_surface(window.clone())?;
-        let gpu = Gpu::new_for_surface(instance, &surface)?;
+        let gpu = Gpu::new_for_surface_preferring(instance, &surface, self.opts.config.gpu.as_deref())?;
         let caps = surface.get_capabilities(&gpu.adapter);
         let format = caps
             .formats
@@ -412,7 +425,8 @@ impl OnsetApp {
             height: size.height.max(1),
             present_mode,
             alpha_mode: caps.alpha_modes[0],
-            view_formats: vec![],
+            // egui blends in gamma space, so it draws through a linear view of the surface.
+            view_formats: vec![format.remove_srgb_suffix()],
             desired_maximum_frame_latency: 2,
         };
         surface.configure(&gpu.device, &config);
@@ -426,9 +440,10 @@ impl OnsetApp {
 
         let mut renderer = Renderer::new(&gpu, (config.width, config.height), format);
         renderer.set_scale(window.scale_factor() as f32);
-        // The launcher page covers the scene; the card and HUD come back with the show.
-        renderer.set_show_card(self.opts.config.show_card && !launcher);
-        renderer.set_show_hud(self.opts.config.show_hud && !launcher);
+        // The launcher's preview shows the card and HUD exactly as the show will.
+        renderer.set_show_card(self.opts.config.show_card);
+        renderer.set_show_hud(self.opts.config.show_hud);
+        renderer.set_settings(&gpu, self.render_settings());
         renderer.set_internal_scale(&gpu, self.opts.config.internal_scale);
         load_scenes(&gpu, &mut renderer);
         let wanted = self
@@ -448,7 +463,7 @@ impl OnsetApp {
             }
         };
 
-        let mut overlay = Overlay::new(&window, &gpu, format);
+        let mut overlay = Overlay::new(&window, &gpu, format.remove_srgb_suffix());
         if launcher {
             overlay.set_page(&window, Page::Launcher);
         } else if self.opts.settings_open {
@@ -515,6 +530,10 @@ impl OnsetApp {
         let view = frame
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
+        let ui_view = frame.texture.create_view(&wgpu::TextureViewDescriptor {
+            format: Some(s.config.format.remove_srgb_suffix()),
+            ..wgpu::TextureViewDescriptor::default()
+        });
         let ms: Arc<MusicState> = self
             .opts
             .engine
@@ -545,9 +564,10 @@ impl OnsetApp {
             s,
             &mut self.opts,
             &self.monitor_infos,
+            &self.adapters,
             calibration,
             &mut enc,
-            &view,
+            &ui_view,
             &ms,
         );
         s.gpu
@@ -663,6 +683,22 @@ impl OnsetApp {
                 }
             }
             OverlayAction::Quit => self.exiting = true,
+            OverlayAction::Look => {
+                let settings = self.render_settings();
+                if let Some(s) = self.surface.as_mut() {
+                    s.renderer.set_settings(&s.gpu, settings);
+                }
+            }
+            OverlayAction::Preview(event) => {
+                if let Some(s) = self.surface.as_mut() {
+                    s.renderer.preview_event(event);
+                }
+            }
+            OverlayAction::NextScene => {
+                if let Some(s) = self.surface.as_mut() {
+                    s.renderer.next_scene();
+                }
+            }
         }
     }
 
@@ -699,8 +735,6 @@ impl OnsetApp {
         self.mode = Mode::Launcher;
         self.fullscreen = false;
         if let Some(s) = self.surface.as_mut() {
-            s.renderer.set_show_card(false);
-            s.renderer.set_show_hud(false);
             s.window.set_fullscreen(None);
             s.window.set_window_level(WindowLevel::Normal);
             s.window.set_decorations(true);
@@ -745,6 +779,16 @@ impl OnsetApp {
     fn start_calibration(&mut self) {
         self.calibration_lines
             .push("calibration reads rekordbox's memory and needs Windows".to_string());
+    }
+
+    /// The renderer's settings from the config; a scene named on the command line turns
+    /// Auto mode off so that scene stays on.
+    fn render_settings(&self) -> onset_render::renderer::RenderSettings {
+        let mut settings = self.opts.config.render_settings();
+        if self.opts.scene.is_some() {
+            settings.auto = false;
+        }
+        settings
     }
 
     fn toggle_fullscreen(&mut self) {

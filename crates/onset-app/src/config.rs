@@ -1,7 +1,51 @@
 //! User configuration, persisted as TOML under `%APPDATA%\Onset\config.toml`.
 use std::path::{Path, PathBuf};
 
+use onset_core::show::{AutoChange, FxSettings};
+use onset_render::renderer::{Quality, RenderSettings};
 use serde::{Deserialize, Serialize};
+
+/// A named starting point for the effect settings; editing any slider makes it Custom.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Preset {
+    Chill,
+    #[default]
+    Club,
+    Festival,
+    Custom,
+}
+
+impl Preset {
+    pub const NAMED: [Self; 3] = [Self::Chill, Self::Club, Self::Festival];
+
+    pub fn fx(self) -> Option<FxSettings> {
+        match self {
+            Self::Chill => Some(FxSettings::CHILL),
+            Self::Club => Some(FxSettings::CLUB),
+            Self::Festival => Some(FxSettings::FESTIVAL),
+            Self::Custom => None,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Chill => "Chill",
+            Self::Club => "Club",
+            Self::Festival => "Festival",
+            Self::Custom => "Custom",
+        }
+    }
+
+    pub fn blurb(self) -> &'static str {
+        match self {
+            Self::Chill => "Smooth and calm: gentle colour shifts, no shake, no inversions.",
+            Self::Club => "Punchy: flashes on drops and cues, some shake and the odd inversion.",
+            Self::Festival => "Everything big: strong flashes, shake, inversions and glitches.",
+            Self::Custom => "Your own mix of the sliders below.",
+        }
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", content = "value", rename_all = "snake_case")]
@@ -37,8 +81,19 @@ pub struct Config {
     pub fullscreen: bool,
     /// Track title the simulator loads at startup when no live transport is configured.
     pub sim_track: Option<String>,
-    /// Substring of the loopback endpoint name; default output device when `None`.
+    /// Substring of the capture device name; `None` picks the DJ controller or the default
+    /// output.
     pub audio_device: Option<String>,
+    /// Scenes change by themselves, following the music.
+    pub auto: bool,
+    pub auto_change: AutoChange,
+    /// Scenes Auto mode may use; `None` means each scene's default.
+    pub rotation: Option<Vec<String>>,
+    pub preset: Preset,
+    pub fx: FxSettings,
+    pub quality: Quality,
+    /// Substring of the graphics card to render on; `None` picks the fastest.
+    pub gpu: Option<String>,
     /// Set when the file on disk failed to parse: saving would destroy the user's edits,
     /// so it is refused until they fix the file.
     #[serde(skip)]
@@ -51,13 +106,33 @@ impl Default for Config {
             output_monitor: MonitorChoice::Primary,
             present_mode: PresentModeChoice::Fifo,
             internal_scale: 1.0,
-            scene: "ring".to_string(),
+            scene: "tunnel".to_string(),
             show_hud: false,
             show_card: true,
             fullscreen: true,
             sim_track: None,
             audio_device: None,
+            auto: true,
+            auto_change: AutoChange::default(),
+            rotation: None,
+            preset: Preset::default(),
+            fx: FxSettings::default(),
+            quality: Quality::default(),
+            gpu: None,
             read_only: false,
+        }
+    }
+}
+
+impl Config {
+    /// What the renderer needs from the settings.
+    pub fn render_settings(&self) -> RenderSettings {
+        RenderSettings {
+            fx: self.preset.fx().unwrap_or(self.fx),
+            quality: self.quality,
+            auto: self.auto,
+            auto_change: self.auto_change,
+            rotation: self.rotation.clone(),
         }
     }
 }
@@ -147,6 +222,16 @@ mod tests {
             fullscreen: false,
             sim_track: Some("Move".into()),
             audio_device: Some("NVIDIA".into()),
+            auto: false,
+            auto_change: AutoChange::Drops,
+            rotation: Some(vec!["tunnel".into(), "lasers".into()]),
+            preset: Preset::Custom,
+            fx: FxSettings {
+                shake: 0.1,
+                ..FxSettings::FESTIVAL
+            },
+            quality: Quality::Ultra,
+            gpu: Some("NVIDIA".into()),
             read_only: false,
         };
         cfg.save_to(&path).unwrap();

@@ -46,6 +46,43 @@ impl Gpu {
         instance: wgpu::Instance,
         surface: &wgpu::Surface<'_>,
     ) -> anyhow::Result<Self> {
+        Self::new_for_surface_preferring(instance, surface, None)
+    }
+
+    /// Names of the graphics adapters that could run Onset (for the launcher's picker).
+    pub fn adapter_names() -> Vec<String> {
+        let instance = Self::instance();
+        let mut names: Vec<String> = pollster::block_on(instance.enumerate_adapters(
+            wgpu::Backends::DX12 | wgpu::Backends::VULKAN,
+        ))
+        .iter()
+        .map(wgpu::Adapter::get_info)
+        .filter(|i| i.device_type != wgpu::DeviceType::Cpu)
+        .map(|i| i.name)
+        .collect();
+        names.sort();
+        names.dedup();
+        names
+    }
+
+    /// Like [`Self::new_for_surface`], choosing the adapter whose name contains `prefer`
+    /// (case-insensitive) when there is one; otherwise the fastest.
+    pub fn new_for_surface_preferring(
+        instance: wgpu::Instance,
+        surface: &wgpu::Surface<'_>,
+        prefer: Option<&str>,
+    ) -> anyhow::Result<Self> {
+        if let Some(want) = prefer.map(str::to_lowercase).filter(|w| !w.is_empty()) {
+            let adapters = pollster::block_on(
+                instance.enumerate_adapters(wgpu::Backends::DX12 | wgpu::Backends::VULKAN),
+            );
+            if let Some(adapter) = adapters.into_iter().find(|a| {
+                a.get_info().name.to_lowercase().contains(&want) && a.is_surface_supported(surface)
+            }) {
+                return Self::with_adapter(instance, adapter);
+            }
+            tracing::warn!(prefer = %want, "preferred graphics card not found; using the fastest");
+        }
         let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
             power_preference: wgpu::PowerPreference::HighPerformance,
             force_fallback_adapter: false,
@@ -54,6 +91,11 @@ impl Gpu {
         }))
         .context("no GPU adapter compatible with the window")?;
         Self::with_adapter(instance, adapter)
+    }
+
+    /// The adapter's name, for the launcher.
+    pub fn adapter_name(&self) -> String {
+        self.adapter.get_info().name
     }
 
     pub fn new_instance() -> wgpu::Instance {

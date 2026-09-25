@@ -97,7 +97,7 @@ impl Hud {
         let px = LINE_PX * scale;
         let gpu = info
             .gpu_ms
-            .map_or_else(|| "n/a".to_string(), |g| format!("{g:.2} ms"));
+            .map_or_else(String::new, |g| format!("  ·  gpu {g:.2} ms"));
         let transport = if ms.track.is_none() {
             "idle".to_string()
         } else if ms.playing {
@@ -119,7 +119,7 @@ impl Hud {
                 info.scene, info.size.0, info.size.1
             ),
             format!(
-                "frame {:.1} ms  ·  p99 {:.1} ms  ·  cpu {:.2} ms  ·  gpu {gpu}",
+                "frame {:.1} ms  ·  p99 {:.1} ms  ·  cpu {:.2} ms{gpu}",
                 self.last_frame_ms(),
                 self.p99_ms(),
                 self.cpu_ms

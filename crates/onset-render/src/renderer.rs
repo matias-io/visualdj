@@ -255,6 +255,11 @@ impl Renderer {
         self.vibe
     }
 
+    /// Plays an event through the show director (and Auto mode) on the next frame.
+    pub fn preview_event(&mut self, event: ShowEvent) {
+        self.show.inject(event);
+    }
+
     pub fn last_events(&self) -> &[ShowEvent] {
         &self.last_events
     }
