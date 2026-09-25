@@ -5,46 +5,63 @@ renders to a second display, and knows the structure of the track that is playin
 phrases, hot cues. Animation is driven from a beat phase that does not lag, and a build-up can
 start before the drop because rekordbox already analysed where the drop is.
 
-It also shows what is playing (title, artists, album, year, key, BPM, artwork), themes the
-visuals from the artwork's colours, and displays synced lyrics when they exist.
+It also shows what is playing (title, artists, album, year, key, BPM, artwork) and themes
+the visuals from the artwork's colours.
 
-![Ring scene with the Now Playing card](docs/img/scene-ring.png)
+![The nine festival scenes](docs/img/scenes.jpg)
 
 ## Status
 
-Pre-alpha, milestone 2 (v0.0.2). The renderer exists and runs at 1080p with headroom; the
-live link to rekordbox is the next milestone, so today the music comes from the built-in
-simulator playing a track from your rekordbox library.
+Pre-alpha. Onset follows a live rekordbox set: it reads the playing deck from rekordbox,
+listens to the mix, and drives a show from both. Verified on a Surface Laptop Studio (RTX
+3050 Ti) with rekordbox 7.2.18 and 7.2.19 and a DDJ-FLX10 on ASIO.
 
-What works, verified against a real rekordbox 7.2.18 library on an RTX 3050 Ti laptop:
+What it does:
 
-- Reads `master.db` (SQLCipher, decrypted to a plaintext cache in about 150 ms, WAL included)
-  and loads the collection: title, artists, album, year, key, BPM, duration, file, artwork,
-  hot cues and memory cues.
-- Parses the analysis files: beat grid, phrase structure (Intro, Up, Chorus, Down, Outro and
-  the Low/Mid vocabularies) and cue lists.
-- Models musical time: a jitter-filtered playhead clock, beat/bar/phrase phase, beats to the
-  next phrase, a drop countdown to the next high-energy phrase, upcoming cues, and a director
-  that turns all of that into an intensity envelope with anticipation.
-- Plays a track through a built-in simulator with an exact playhead, and captures the live
-  mix through WASAPI loopback into a 24-band analyzer with onset and silence detection.
-- Renders on a chosen monitor, borderless and always on top, through wgpu (Vulkan or DX12);
-  when that monitor is missing it opens a plain window instead of covering rekordbox.
-  Four scenes read one uniform block (beat, bar and phrase phase, intensity, drop countdown,
-  24 bands, five theme colours): `pulse`, `ring`, `warp`, `voronoi`. Shaders are plain WGSL
-  files and reload while the app runs; a broken shader keeps the last good one and shows the
-  compiler message in the HUD, and a broken or missing file at start falls back to the copy
-  built into the binary.
-- A Now Playing card with the artwork, title, artists and a metadata line, crossfading over
-  1.2 s when the track changes. Artwork decodes on a worker thread.
-- A HUD with frame time, p99 over 120 frames, transport, phrase, drop countdown and the last
-  shader error. A settings panel (Tab) that edits the config live.
-- Performance, measured with `--bench` at 1920x1080 without vsync: every scene renders a
-  frame in about 2.6 ms on average, 3.6 ms at the 99th percentile.
+- **Follows rekordbox.** It finds every deck in rekordbox's memory, knows which track each
+  one has loaded, and follows the deck that is playing: title, artwork, beat grid, phrases,
+  hot cues, key, genre and mood come from the rekordbox library.
+- **Listens by frequency, not just loudness.** The mix splits into sub, bass, low-mid, mid,
+  high-mid and treble, each with its own gain, plus kick, snare and hat detection. Every
+  scene moves different parts with different bands.
+- **Directs a show from the analysis.** Beats, bars, phrase changes, drops, breakdowns and
+  hot cues become events: white flashes on drops, flashes in the cue's colour as the
+  playhead passes a cue, the odd inversion or hue swing, camera shake and zoom on kicks.
+  Strobe is off by default and never faster than 3 Hz. Each track gets its own random seed,
+  so the same moments land differently in different tracks.
+- **Picks scenes by itself.** Auto mode reads tempo, key, genre, rekordbox's mood and the
+  cover's brightness. A dark, slow track gets Deep Space; a fast dance track gets Lasers or
+  the Neon Tunnel. It can change scene per track, at drops, or every few phrases, with a
+  glitch, zoom, flash or wipe between them. The HUD and the Now Playing card swell briefly
+  on a new track or a drop.
+- **Nine festival scenes**, raymarched in 3D or drawn in 2D, on an HDR pipeline with bloom,
+  feedback trails and film grain: Neon Tunnel, Outrun, Silk, Mandala, Laser Show, Deep
+  Space, Crystal, Liquid and Cover Art. The four earlier scenes (`pulse`, `ring`, `warp`,
+  `voronoi`) remain for low-end machines. Colours come from the cover art.
+- **A launcher for the set.** The Show tab has everything needed: output screen, a Chill,
+  Club or Festival style, Auto scenes, and the card and HUD switches. The other tabs hold the
+  finer controls: which scenes Auto uses, effect strengths with live meters and preview
+  buttons, graphics card and quality, the audio input with a live spectrum, and rekordbox
+  calibration.
 
-| pulse | warp | voronoi |
+Frame times at 1920x1080, High quality, measured with `--bench` on the RTX 3050 Ti:
+
+| Scene | Mean | p99 |
 | --- | --- | --- |
-| ![](docs/img/scene-pulse.png) | ![](docs/img/scene-warp.png) | ![](docs/img/scene-voronoi.png) |
+| Neon Tunnel | 10.9 ms | 14.0 ms |
+| Outrun | 4.3 ms | 6.0 ms |
+| Silk | 7.8 ms | 12.6 ms |
+| Mandala | 2.9 ms | 5.1 ms |
+| Laser Show | 4.1 ms | 5.7 ms |
+| Deep Space | 10.8 ms | 14.2 ms |
+| Crystal | 11.1 ms | 12.7 ms |
+| Liquid | 5.2 ms | 7.4 ms |
+| Cover Art | 2.6 ms | 4.7 ms |
+
+Low and Medium quality render at a lower internal resolution and keep the heavy scenes out
+of Auto, for integrated graphics.
+
+Not done yet: synced lyrics, and reading which deck rekordbox calls MASTER.
 
 ## Build and run
 
@@ -58,12 +75,14 @@ The binary is `target\release\onset.exe` (`target/release/onset` in a Unix shell
 single file; keep the `assets\` folder next to it or run it from the repository root, and it
 also carries built-in copies of the shaders and fonts so it starts without them.
 
-Start the output window. With rekordbox running and calibrated it follows the master deck;
-otherwise it waits:
+Start Onset. It opens the launcher, where you pick the screen and the style and press Start
+show. With rekordbox running and calibrated it follows the playing deck; otherwise it waits:
 
 ```bash
-target\release\onset.exe --monitor 1 --scene ring
+target\release\onset.exe
 ```
+
+`--scene tunnel` starts on one scene and turns Auto off.
 
 For development without rekordbox, `--sim "<title>"` plays a track from your library through
 the built-in simulator instead. That is a developer tool: Onset never plays music on its own
@@ -81,14 +100,15 @@ Keys in the output window:
 
 | Key | Action |
 | --- | --- |
-| Tab | Settings panel: monitor, present mode, internal scale, scene, HUD and card, transport, audio device |
+| Tab | Settings panel over the show |
 | H, C | Toggle the HUD, toggle the Now Playing card |
 | Left, Right | Previous or next scene |
-| Space, Home | Pause or resume the simulator, back to the start |
-| [ , ] | Simulator rate down or up by 1 % |
 | B | Blackout: black output until pressed again |
 | F | Toggle fullscreen |
-| Esc | Close the settings panel, or quit |
+| Esc | Close the settings panel, or go back to the launcher |
+
+With `--sim`, Space pauses the simulator, Home restarts the track, `[` and `]` change its
+rate by 1 % and R reloads it.
 
 Other flags: `--bench 20` runs for 20 s without vsync and prints frame statistics;
 `--screenshot out.png` saves a frame a second before exit; `--settings` opens the panel at
@@ -107,14 +127,13 @@ Developer CLI (`cargo run -p onset-cli -- <command>`):
 Onset reads rekordbox's live state (deck positions, and which deck is playing) from the
 rekordbox process. Where those values live changes with every rekordbox release, so each
 version needs a one-time calibration that writes `offsets\<version>.toml`. rekordbox 7.2.18
-ships calibrated (`offsets.2.18.toml`). For another version the HUD says
-`no offsets for rekordbox <version>` and Onset idles until you calibrate.
+and 7.2.19 ship calibrated. For another version the launcher says the version is not
+calibrated yet and Onset idles until you calibrate.
 
 Calibrate with rekordbox open in Performance mode and the decks to yourself:
 
 ```bash
-target
-elease\onset-cli.exe calibrate
+target\release\onset-cli.exe calibrate
 ```
 
 It announces each step and watches rekordbox's memory until it sees you do it, so there is
@@ -123,7 +142,12 @@ calibrator which counter is the real playhead (it stops and resumes) rather than
 that keeps running; it then records the pointers the player object carries around that
 field. At runtime Onset scans for that description, so it finds every deck wherever
 rekordbox allocated it, on every launch. The whole run takes about two minutes. The
-launcher runs the same session from its Calibration section.
+launcher runs the same session from its Setup tab.
+
+If tracks show one song behind, the saved description only matches one deck. Onset repairs
+this at runtime and says so in the log; `onset-cli calibrate --refine` saves the repair.
+Finding the decks takes up to 20 seconds after Onset or rekordbox starts, and the show keeps
+running meanwhile.
 
 Onset reads rekordbox's live state as follows, none of it written back:
 
@@ -142,12 +166,14 @@ that deck stops.
 ## Writing a scene
 
 A scene is one WGSL file in `assets/shaders/` with a fragment entry point `fs_main` that
-receives `VsOut { uv }` and reads the `frame` uniform declared in `common.wgsl` (beat phase,
-bar phase, phrase phase, intensity, BPM, drop countdown, bands, theme colours, time,
-resolution). `common.wgsl` also provides `band(i)`, `theme(i)`, `centred(uv)`, noise and
-`beat_pulse`. Save the file while Onset runs and the scene recompiles in place. Add the file
-stem to `BUILTIN_SCENE_NAMES` in `crates/onset-render/src/scenes/mod.rs` to put it in the
-menu.
+receives `VsOut { uv }` and returns HDR colour. `common.wgsl` gives it the music and the
+show: `sub()`, `bass()`, `mid()`, `treble()` and `spectrum(t)` for the bands; `kick()`,
+`snare()` and `hat()` for the drums; `music_time()`, `beat_count()` and the beat, bar and
+phrase phases for time; `drop_hit()`, `tension()`, `energy()` and `darkness()` from the show
+director; `palette(t)` and `artwork(uv)` for colour; plus noise, rotations and signed
+distance functions for raymarching. Save the file while Onset runs and the scene recompiles
+in place. Add it to `SCENES` in `crates/onset-render/src/scenes/mod.rs`, with a cost and a
+line of description, to put it in the menu and in Auto mode.
 
 ## How it reads rekordbox
 
@@ -158,13 +184,13 @@ machine it reads:
   waveforms) that rekordbox writes to the user's profile;
 - rekordbox's process memory, to learn which deck is playing and where its playhead is
   (the pointer offsets are specific to each rekordbox version and are calibrated locally);
-- the master mix, via rekordbox's PC MASTER OUT setting and a WASAPI loopback capture.
+- the mix, from the DJ controller's USB recording input or a WASAPI loopback capture.
 
 Nothing is written to rekordbox's files or memory.
 
 ## Requirements
 
-- Windows 11 x64, rekordbox 7 (tested with 7.2.18), a controller in Performance mode.
+- Windows 11 x64, rekordbox 7 (tested with 7.2.18 and 7.2.19), a controller in Performance mode.
 - A second display for the output window and a GPU with Vulkan or DX12.
 - To build: Rust (the pinned toolchain in `rust-toolchain.toml` installs itself through
   `rustup`), Visual Studio Build Tools with the C++ workload.
