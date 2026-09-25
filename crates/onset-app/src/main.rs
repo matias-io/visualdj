@@ -3,6 +3,7 @@ mod app;
 mod bench;
 mod config;
 mod engine;
+mod launcher;
 mod monitors;
 mod overlay;
 
@@ -57,6 +58,9 @@ struct Cli {
     /// Save one frame as PNG here, a second before exit (or 3 s in without --exit-after)
     #[arg(long, value_name = "PNG")]
     screenshot: Option<PathBuf>,
+    /// Skip the launcher and put the show on the configured monitor at once
+    #[arg(long)]
+    show: bool,
 }
 
 fn parse_monitor(s: &str) -> MonitorChoice {
@@ -103,12 +107,20 @@ fn main() -> anyhow::Result<()> {
         return Ok(());
     }
     let config = Config::load();
+    let offsets_dir = offsets_dir();
+    // Unattended runs and the developer simulator go straight to the show.
+    let launcher = !(cli.show
+        || cli.sim.is_some()
+        || cli.exit_after.is_some()
+        || cli.bench.is_some()
+        || cli.screenshot.is_some()
+        || cli.settings);
 
     // Onset is a visualiser: rekordbox is the source. The simulator runs only when asked.
     let engine = match Engine::start(EngineConfig {
         app_dir: cli.app_dir.clone(),
         cache_dir: cache_dir(),
-        offsets_dir: offsets_dir(),
+        offsets_dir: offsets_dir.clone(),
         sim_track: cli.sim.clone(),
         sim_seek_s: cli.seek,
         sim_gain: cli.gain,
@@ -133,6 +145,8 @@ fn main() -> anyhow::Result<()> {
         bench: cli.bench.is_some(),
         settings_open: cli.settings,
         screenshot: cli.screenshot.clone(),
+        launcher,
+        offsets_dir,
         engine,
     };
     let event_loop = EventLoop::new()?;

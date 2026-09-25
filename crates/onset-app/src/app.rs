@@ -1,7 +1,10 @@
-//! The output window: borderless fullscreen on the chosen monitor, a wgpu surface, and the
-//! frame loop that renders the engine's latest `MusicState` through the active scene.
+//! The window: the launcher page first (a plain window on the primary monitor), then the
+//! show as borderless fullscreen on the chosen monitor; one wgpu surface and the frame loop
+//! that renders the engine's latest `MusicState` through the active scene.
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use onset_core::music_state::MusicState;
@@ -12,7 +15,7 @@ use onset_render::hot_reload::ShaderWatcher;
 use onset_render::renderer::Renderer;
 use onset_render::scenes::builtin_scenes;
 use winit::application::ApplicationHandler;
-use winit::dpi::PhysicalSize;
+use winit::dpi::{LogicalSize, PhysicalSize};
 use winit::event::{ElementState, KeyEvent, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow};
 use winit::keyboard::{KeyCode, PhysicalKey};
@@ -22,8 +25,9 @@ use winit::window::{Fullscreen, Window, WindowAttributes, WindowId, WindowLevel}
 use crate::bench::BenchStats;
 use crate::config::{Config, MonitorChoice, PresentModeChoice};
 use crate::engine::{Engine, EngineCommand, EngineStatus};
+use crate::launcher::{CalibrationView, LAUNCHER_SIZE, calibrated_versions};
 use crate::monitors::{MonitorInfo, choose};
-use crate::overlay::{DrawResult, DrawTarget, Overlay, OverlayAction, OverlayView};
+use crate::overlay::{DrawResult, DrawTarget, Overlay, OverlayAction, OverlayView, Page};
 
 pub struct AppOptions {
     pub config: Config,
@@ -39,7 +43,24 @@ pub struct AppOptions {
     pub settings_open: bool,
     /// Save one frame here shortly before exit.
     pub screenshot: Option<PathBuf>,
+    /// Open on the launcher page rather than straight into the show.
+    pub launcher: bool,
+    /// Where `<version>.toml` offsets live; the launcher lists and writes them.
+    pub offsets_dir: PathBuf,
     pub engine: Option<Engine>,
+}
+
+/// Launcher or show: what the one window is doing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Mode {
+    Launcher,
+    Show,
+}
+
+/// A calibration session running on its own thread, reporting through a channel.
+struct CalibrationRun {
+    rx: mpsc::Receiver<String>,
+    cancel: Arc<AtomicBool>,
 }
 
 struct Surface {
@@ -58,10 +79,15 @@ pub struct OnsetApp {
     started: Instant,
     frames: u64,
     fullscreen: bool,
+    mode: Mode,
     paused: bool,
     rate: f32,
     monitor: Option<MonitorHandle>,
-    monitor_names: Vec<String>,
+    monitor_handles: Vec<MonitorHandle>,
+    monitor_infos: Vec<MonitorInfo>,
+    calibration: Option<CalibrationRun>,
+    calibration_lines: Vec<String>,
+    versions: Vec<String>,
     last_scene_log: Instant,
     last_frame: Option<Instant>,
     /// Frame intervals in ms, kept only in bench mode.
@@ -128,6 +154,27 @@ fn pick_present_mode(
     wgpu::PresentMode::Fifo
 }
 
+/// The next swapchain texture, reconfiguring the surface when it says so; `None` means skip
+/// this frame.
+fn acquire_frame(s: &mut Surface) -> Option<wgpu::SurfaceTexture> {
+    match s.target.get_current_texture() {
+        wgpu::CurrentSurfaceTexture::Success(f) => Some(f),
+        wgpu::CurrentSurfaceTexture::Suboptimal(f) => {
+            s.target.configure(&s.gpu.device, &s.config);
+            Some(f)
+        }
+        wgpu::CurrentSurfaceTexture::Timeout | wgpu::CurrentSurfaceTexture::Occluded => None,
+        wgpu::CurrentSurfaceTexture::Outdated | wgpu::CurrentSurfaceTexture::Lost => {
+            s.target.configure(&s.gpu.device, &s.config);
+            None
+        }
+        wgpu::CurrentSurfaceTexture::Validation => {
+            tracing::error!("surface acquisition failed validation");
+            None
+        }
+    }
+}
+
 /// Reads the frame back and writes it as PNG; failures are logged, never fatal.
 fn save_frame(s: &Surface, texture: &wgpu::Texture, path: &std::path::Path) {
     if !s.config.usage.contains(wgpu::TextureUsages::COPY_SRC) {
@@ -156,9 +203,48 @@ fn save_frame(s: &Surface, texture: &wgpu::Texture, path: &std::path::Path) {
     }
 }
 
-/// Borderless fullscreen on `monitor` (always on top, so nothing covers the projector), or
-/// a plain 1280x720 window when the output is not going to a dedicated display.
-fn window_attributes(fullscreen: bool, monitor: Option<&MonitorHandle>) -> WindowAttributes {
+/// The key a press stands for. The physical scancode is the rule; input injected by tools
+/// (macro pads, remote control) often carries no scancode, so the logical key stands in.
+fn key_code(event: &KeyEvent) -> Option<KeyCode> {
+    use winit::keyboard::{Key, NamedKey};
+    if let PhysicalKey::Code(code) = event.physical_key {
+        return Some(code);
+    }
+    match &event.logical_key {
+        Key::Named(NamedKey::Escape) => Some(KeyCode::Escape),
+        Key::Named(NamedKey::Tab) => Some(KeyCode::Tab),
+        Key::Named(NamedKey::Space) => Some(KeyCode::Space),
+        Key::Named(NamedKey::Home) => Some(KeyCode::Home),
+        Key::Named(NamedKey::ArrowLeft) => Some(KeyCode::ArrowLeft),
+        Key::Named(NamedKey::ArrowRight) => Some(KeyCode::ArrowRight),
+        Key::Character(c) => match c.to_ascii_lowercase().as_str() {
+            "f" => Some(KeyCode::KeyF),
+            "h" => Some(KeyCode::KeyH),
+            "c" => Some(KeyCode::KeyC),
+            "b" => Some(KeyCode::KeyB),
+            "r" => Some(KeyCode::KeyR),
+            "[" => Some(KeyCode::BracketLeft),
+            "]" => Some(KeyCode::BracketRight),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// The launcher's plain window, or borderless fullscreen on `monitor` (always on top, so
+/// nothing covers the projector), or a plain 1280x720 window when the output is not going
+/// to a dedicated display.
+fn window_attributes(
+    launcher: bool,
+    fullscreen: bool,
+    monitor: Option<&MonitorHandle>,
+) -> WindowAttributes {
+    if launcher {
+        return WindowAttributes::default()
+            .with_title("Onset")
+            .with_decorations(true)
+            .with_inner_size(LogicalSize::new(LAUNCHER_SIZE.0, LAUNCHER_SIZE.1));
+    }
     let attrs = WindowAttributes::default()
         .with_title("Onset")
         .with_decorations(false);
@@ -175,7 +261,8 @@ fn window_attributes(fullscreen: bool, monitor: Option<&MonitorHandle>) -> Windo
 fn draw_overlay(
     s: &mut Surface,
     opts: &mut AppOptions,
-    monitor_names: &[String],
+    monitors: &[MonitorInfo],
+    calibration: CalibrationView<'_>,
     enc: &mut wgpu::CommandEncoder,
     view: &wgpu::TextureView,
     ms: &MusicState,
@@ -195,7 +282,7 @@ fn draw_overlay(
         };
     let scenes = s.renderer.scene_names();
     let overlay_view = OverlayView {
-        monitors: monitor_names,
+        monitors,
         scenes: &scenes,
         active_scene: s.renderer.active_scene().unwrap_or("-"),
         tracks,
@@ -205,6 +292,7 @@ fn draw_overlay(
         duration_s: ms.track.as_ref().and_then(|t| t.duration_s),
         playing: ms.playing,
         frame_ms: s.renderer.hud().last_frame_ms(),
+        calibration,
     };
     let target = DrawTarget {
         window: &s.window,
@@ -219,16 +307,27 @@ fn draw_overlay(
 impl OnsetApp {
     pub fn new(opts: AppOptions) -> Self {
         let screenshot_pending = opts.screenshot.clone();
+        let versions = calibrated_versions(&opts.offsets_dir);
+        let mode = if opts.launcher {
+            Mode::Launcher
+        } else {
+            Mode::Show
+        };
         Self {
+            fullscreen: !opts.launcher,
+            mode,
             opts,
             surface: None,
             started: Instant::now(),
             frames: 0,
-            fullscreen: true,
             paused: false,
             rate: 1.0,
             monitor: None,
-            monitor_names: Vec::new(),
+            monitor_handles: Vec::new(),
+            monitor_infos: Vec::new(),
+            calibration: None,
+            calibration_lines: Vec::new(),
+            versions,
             last_scene_log: Instant::now(),
             last_frame: None,
             frame_log: Vec::new(),
@@ -237,7 +336,9 @@ impl OnsetApp {
         }
     }
 
-    fn create_surface(&mut self, event_loop: &ActiveEventLoop) -> anyhow::Result<()> {
+    /// Picks the output monitor and opens the window: the launcher's plain one, or the
+    /// show's. Falls back to a window on the primary when the chosen monitor is missing.
+    fn create_window(&mut self, event_loop: &ActiveEventLoop) -> anyhow::Result<Arc<Window>> {
         let (handles, infos) = monitor_infos(event_loop);
         let choice = self
             .opts
@@ -265,11 +366,22 @@ impl OnsetApp {
             );
         }
 
-        let window = Arc::new(
-            event_loop.create_window(window_attributes(self.fullscreen, monitor.as_ref()))?,
-        );
-        window.set_cursor_visible(false);
+        let launcher = self.mode == Mode::Launcher;
+        let window = Arc::new(event_loop.create_window(window_attributes(
+            launcher,
+            self.fullscreen,
+            monitor.as_ref(),
+        ))?);
+        window.set_cursor_visible(launcher);
+        self.monitor = monitor;
+        self.monitor_handles = handles;
+        self.monitor_infos = infos;
+        Ok(window)
+    }
 
+    fn create_surface(&mut self, event_loop: &ActiveEventLoop) -> anyhow::Result<()> {
+        let window = self.create_window(event_loop)?;
+        let launcher = self.mode == Mode::Launcher;
         let instance = Gpu::new_instance();
         let surface = instance.create_surface(window.clone())?;
         let gpu = Gpu::new_for_surface(instance, &surface)?;
@@ -309,8 +421,9 @@ impl OnsetApp {
 
         let mut renderer = Renderer::new(&gpu, (config.width, config.height), format);
         renderer.set_scale(window.scale_factor() as f32);
-        renderer.set_show_card(self.opts.config.show_card);
-        renderer.set_show_hud(self.opts.config.show_hud);
+        // The launcher page covers the scene; the card and HUD come back with the show.
+        renderer.set_show_card(self.opts.config.show_card && !launcher);
+        renderer.set_show_hud(self.opts.config.show_hud && !launcher);
         renderer.set_internal_scale(&gpu, self.opts.config.internal_scale);
         load_scenes(&gpu, format, &mut renderer);
         let wanted = self
@@ -331,11 +444,11 @@ impl OnsetApp {
         };
 
         let mut overlay = Overlay::new(&window, &gpu, format);
-        if self.opts.settings_open {
+        if launcher {
+            overlay.set_page(&window, Page::Launcher);
+        } else if self.opts.settings_open {
             overlay.set_open(&window, true);
         }
-        self.monitor = monitor;
-        self.monitor_names = infos.iter().map(|m| m.name.clone()).collect();
         self.surface = Some(Surface {
             window,
             target: surface,
@@ -365,30 +478,34 @@ impl OnsetApp {
         }
     }
 
+    /// Collects calibration progress; a closed channel means the run ended.
+    fn poll_calibration(&mut self) {
+        let Some(run) = self.calibration.as_ref() else {
+            return;
+        };
+        loop {
+            match run.rx.try_recv() {
+                Ok(line) => self.calibration_lines.push(line),
+                Err(mpsc::TryRecvError::Empty) => break,
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    self.calibration = None;
+                    self.versions = calibrated_versions(&self.opts.offsets_dir);
+                    break;
+                }
+            }
+        }
+    }
+
     fn render(&mut self) {
+        self.poll_calibration();
         let Some(s) = self.surface.as_mut() else {
             return;
         };
         if let Some(w) = s.watcher.as_mut() {
             s.renderer.poll_hot_reload(&s.gpu, w, &shader_dir());
         }
-        let frame = match s.target.get_current_texture() {
-            wgpu::CurrentSurfaceTexture::Success(f) => f,
-            wgpu::CurrentSurfaceTexture::Suboptimal(f) => {
-                s.target.configure(&s.gpu.device, &s.config);
-                f
-            }
-            wgpu::CurrentSurfaceTexture::Timeout | wgpu::CurrentSurfaceTexture::Occluded => {
-                return;
-            }
-            wgpu::CurrentSurfaceTexture::Outdated | wgpu::CurrentSurfaceTexture::Lost => {
-                s.target.configure(&s.gpu.device, &s.config);
-                return;
-            }
-            wgpu::CurrentSurfaceTexture::Validation => {
-                tracing::error!("surface acquisition failed validation");
-                return;
-            }
+        let Some(frame) = acquire_frame(s) else {
+            return;
         };
         let view = frame
             .texture
@@ -410,11 +527,24 @@ impl OnsetApp {
         }
         let stats = s.renderer.render(&s.gpu, &mut enc, &view, &ms, time_s);
 
+        let calibration = CalibrationView {
+            running: self.calibration.is_some(),
+            lines: &self.calibration_lines,
+            versions: &self.versions,
+        };
         let DrawResult {
             buffers,
             actions: pending,
             changed: save,
-        } = draw_overlay(s, &mut self.opts, &self.monitor_names, &mut enc, &view, &ms);
+        } = draw_overlay(
+            s,
+            &mut self.opts,
+            &self.monitor_infos,
+            calibration,
+            &mut enc,
+            &view,
+            &ms,
+        );
         s.gpu
             .queue
             .submit(buffers.into_iter().chain(std::iter::once(enc.finish())));
@@ -520,15 +650,100 @@ impl OnsetApp {
                     e.command(cmd);
                 }
             }
+            OverlayAction::StartShow => self.enter_show(),
+            OverlayAction::Calibrate => self.start_calibration(),
+            OverlayAction::CancelCalibration => {
+                if let Some(run) = &self.calibration {
+                    run.cancel.store(true, Ordering::Relaxed);
+                }
+            }
+            OverlayAction::Quit => self.exiting = true,
         }
+    }
+
+    /// Leaves the launcher: the window goes to the chosen monitor, fullscreen when asked.
+    fn enter_show(&mut self) {
+        self.mode = Mode::Show;
+        let (index, fell_back) = choose(&self.monitor_infos, &self.opts.config.output_monitor);
+        if fell_back {
+            tracing::warn!("chosen monitor not found; showing on the primary");
+        }
+        self.monitor = self.monitor_handles.get(index).cloned();
+        self.fullscreen = self.opts.config.fullscreen;
+        if let Some(s) = self.surface.as_mut() {
+            s.overlay.set_page(&s.window, Page::Hidden);
+            s.renderer.set_show_card(self.opts.config.show_card);
+            s.renderer.set_show_hud(self.opts.config.show_hud);
+            s.window.set_decorations(false);
+            if self.fullscreen {
+                s.window
+                    .set_fullscreen(Some(Fullscreen::Borderless(self.monitor.clone())));
+                s.window.set_window_level(WindowLevel::AlwaysOnTop);
+            }
+            s.window.set_cursor_visible(false);
+        }
+        tracing::info!(monitor = index, fullscreen = self.fullscreen, "show started");
+    }
+
+    /// Back to the launcher: a plain window again, wherever it was.
+    fn leave_show(&mut self) {
+        self.mode = Mode::Launcher;
+        self.fullscreen = false;
+        if let Some(s) = self.surface.as_mut() {
+            s.renderer.set_show_card(false);
+            s.renderer.set_show_hud(false);
+            s.window.set_fullscreen(None);
+            s.window.set_window_level(WindowLevel::Normal);
+            s.window.set_decorations(true);
+            let _ = s
+                .window
+                .request_inner_size(LogicalSize::new(LAUNCHER_SIZE.0, LAUNCHER_SIZE.1));
+            s.overlay.set_page(&s.window, Page::Launcher);
+        }
+        tracing::info!("back to the launcher");
+    }
+
+    #[cfg(windows)]
+    fn start_calibration(&mut self) {
+        use onset_transport::memory::calibrator::{self, Session};
+        if self.calibration.is_some() {
+            return;
+        }
+        self.calibration_lines.clear();
+        let (tx, rx) = mpsc::channel();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let flag = Arc::clone(&cancel);
+        let dir = self.opts.offsets_dir.clone();
+        std::thread::spawn(move || {
+            let mut report = |line: &str| {
+                let _ = tx.send(line.to_string());
+            };
+            let mut session = Session {
+                step_limit: Duration::from_secs(180),
+                report: &mut report,
+                cancel: &flag,
+            };
+            let outcome = calibrator::calibrate(&dir, &mut session);
+            let _ = match outcome {
+                Ok(path) => tx.send(format!("done: {}", path.display())),
+                Err(e) => tx.send(format!("failed: {e:#}")),
+            };
+        });
+        self.calibration = Some(CalibrationRun { rx, cancel });
+    }
+
+    #[cfg(not(windows))]
+    fn start_calibration(&mut self) {
+        self.calibration_lines
+            .push("calibration reads rekordbox's memory and needs Windows".to_string());
     }
 
     fn toggle_fullscreen(&mut self) {
         self.fullscreen = !self.fullscreen;
         if let Some(s) = &self.surface {
-            let mode = self
-                .fullscreen
-                .then(|| Fullscreen::Borderless(self.monitor.clone()));
+            // The monitor the window is on right now, so F never throws it onto another.
+            let monitor = s.window.current_monitor().or_else(|| self.monitor.clone());
+            let mode = self.fullscreen.then_some(Fullscreen::Borderless(monitor));
             s.window.set_fullscreen(mode);
             s.window.set_window_level(if self.fullscreen {
                 WindowLevel::AlwaysOnTop
@@ -541,10 +756,20 @@ impl OnsetApp {
     fn on_key(&mut self, event_loop: &ActiveEventLoop, key: KeyCode) {
         match key {
             KeyCode::Escape => {
-                // With the panel open, Esc closes it; a second Esc quits.
-                match self.surface.as_mut() {
-                    Some(s) if s.overlay.is_open() => s.overlay.set_open(&s.window, false),
-                    _ => event_loop.exit(),
+                // With the settings panel open, Esc closes it; otherwise it leaves the show
+                // for the launcher, or quits when there is no launcher to go back to.
+                let settings_open = self
+                    .surface
+                    .as_ref()
+                    .is_some_and(|s| s.overlay.page() == Page::Settings);
+                if settings_open {
+                    if let Some(s) = self.surface.as_mut() {
+                        s.overlay.set_open(&s.window, false);
+                    }
+                } else if self.mode == Mode::Show && self.opts.launcher {
+                    self.leave_show();
+                } else if self.mode == Mode::Show {
+                    event_loop.exit();
                 }
             }
             KeyCode::KeyF => self.toggle_fullscreen(),
@@ -630,17 +855,25 @@ impl ApplicationHandler for OnsetApp {
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
-        if let WindowEvent::KeyboardInput {
-            event:
-                KeyEvent {
-                    physical_key: PhysicalKey::Code(KeyCode::Tab),
-                    state: ElementState::Pressed,
-                    repeat: false,
-                    ..
-                },
-            ..
-        } = &event
-        {
+        if let WindowEvent::KeyboardInput { event: key, .. } = &event {
+            tracing::debug!(physical = ?key.physical_key, logical = ?key.logical_key, state = ?key.state, repeat = key.repeat, "key event");
+        }
+        let pressed_key = match &event {
+            WindowEvent::KeyboardInput {
+                event:
+                    KeyEvent {
+                        state: ElementState::Pressed,
+                        repeat: false,
+                        ..
+                    },
+                ..
+            } => match &event {
+                WindowEvent::KeyboardInput { event, .. } => key_code(event),
+                _ => None,
+            },
+            _ => None,
+        };
+        if pressed_key == Some(KeyCode::Tab) {
             if let Some(s) = self.surface.as_mut() {
                 s.overlay.toggle(&s.window);
             }
@@ -650,6 +883,12 @@ impl ApplicationHandler for OnsetApp {
             .surface
             .as_mut()
             .is_some_and(|s| s.overlay.on_event(&s.window, &event));
+        if let Some(code) = pressed_key
+            && !consumed
+        {
+            self.on_key(event_loop, code);
+            return;
+        }
         match event {
             WindowEvent::CloseRequested => event_loop.exit(),
             WindowEvent::Resized(size) => self.resize(size),
@@ -660,16 +899,6 @@ impl ApplicationHandler for OnsetApp {
                     self.resize(size);
                 }
             }
-            WindowEvent::KeyboardInput {
-                event:
-                    KeyEvent {
-                        physical_key: PhysicalKey::Code(code),
-                        state: ElementState::Pressed,
-                        repeat: false,
-                        ..
-                    },
-                ..
-            } if !consumed => self.on_key(event_loop, code),
             WindowEvent::RedrawRequested => {
                 self.render();
                 if let Some(s) = &self.surface {
@@ -687,6 +916,11 @@ impl ApplicationHandler for OnsetApp {
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        if self.exiting {
+            // The launcher's Quit button, or an exit already under way.
+            event_loop.exit();
+            return;
+        }
         if let Some(limit) = self.opts.exit_after
             && !self.exiting
             && self.started.elapsed() >= limit

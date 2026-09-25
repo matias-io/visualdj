@@ -1,5 +1,7 @@
-//! The in-window settings panel (egui), toggled with `Tab`. It edits the `Config` directly
-//! and reports the runtime effects the app has to apply.
+//! The in-window egui pages: the launcher before the show and the settings panel over it
+//! (toggled with `Tab`). Both edit the `Config` directly and report the runtime effects the
+//! app has to apply.
+use std::fmt::Write as _;
 use std::sync::Arc;
 
 use egui_wgpu::{Renderer as EguiRenderer, RendererOptions, ScreenDescriptor};
@@ -9,6 +11,8 @@ use winit::window::Window;
 
 use crate::config::{Config, MonitorChoice, PresentModeChoice};
 use crate::engine::{EngineCommand, EngineStatus, TrackEntry};
+use crate::launcher::{CalibrationView, launcher_page};
+use crate::monitors::MonitorInfo;
 
 /// Most tracks the search list shows at once.
 pub const LIST_CAP: usize = 60;
@@ -25,11 +29,25 @@ pub enum OverlayAction {
     ShowHud(bool),
     ShowCard(bool),
     Engine(EngineCommand),
+    /// Launcher: leave the launcher and put the show on the output monitor.
+    StartShow,
+    /// Launcher: run the calibration session in the background.
+    Calibrate,
+    CancelCalibration,
+    Quit,
+}
+
+/// Which page the window shows over the scene.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Page {
+    Hidden,
+    Settings,
+    Launcher,
 }
 
 /// Read-only state the panel displays.
 pub struct OverlayView<'a> {
-    pub monitors: &'a [String],
+    pub monitors: &'a [MonitorInfo],
     pub scenes: &'a [String],
     pub active_scene: &'a str,
     pub tracks: &'a [TrackEntry],
@@ -40,6 +58,7 @@ pub struct OverlayView<'a> {
     pub duration_s: Option<f32>,
     pub playing: bool,
     pub frame_ms: f32,
+    pub calibration: CalibrationView<'a>,
 }
 
 /// Where a frame's panel is drawn.
@@ -60,15 +79,15 @@ pub struct DrawResult {
     pub changed: bool,
 }
 
-/// Edits collected while the panel runs.
+/// Edits collected while a page runs.
 #[derive(Default)]
-struct Edits {
-    actions: Vec<OverlayAction>,
-    changed: bool,
+pub struct Edits {
+    pub actions: Vec<OverlayAction>,
+    pub changed: bool,
 }
 
 impl Edits {
-    fn push(&mut self, action: OverlayAction) {
+    pub fn push(&mut self, action: OverlayAction) {
         self.actions.push(action);
         self.changed = true;
     }
@@ -78,7 +97,7 @@ pub struct Overlay {
     ctx: egui::Context,
     state: egui_winit::State,
     renderer: EguiRenderer,
-    open: bool,
+    page: Page,
     search: String,
     endpoints: Vec<String>,
     rate: f32,
@@ -96,12 +115,25 @@ pub fn filter_tracks<'a>(tracks: &'a [TrackEntry], query: &str, cap: usize) -> V
         .collect()
 }
 
-fn monitor_label(monitors: &[String], choice: &MonitorChoice) -> String {
+/// One monitor as the pickers show it: name, pixel size, scale and whether it is primary.
+pub fn monitor_detail(m: &MonitorInfo) -> String {
+    let mut s = format!("{} {}x{}", m.name, m.size.0, m.size.1);
+    if (m.scale - 1.0).abs() > 0.01 {
+        let _ = write!(s, " @{:.0}%", m.scale * 100.0);
+    }
+    if m.is_primary {
+        s.push_str(" (primary)");
+    }
+    s
+}
+
+fn monitor_label(monitors: &[MonitorInfo], choice: &MonitorChoice) -> String {
     match choice {
         MonitorChoice::Primary => "Primary".to_string(),
-        MonitorChoice::Index(i) => monitors
-            .get(*i)
-            .map_or_else(|| format!("#{i} (not connected)"), |n| format!("#{i} {n}")),
+        MonitorChoice::Index(i) => monitors.get(*i).map_or_else(
+            || format!("#{i} (not connected)"),
+            |m| format!("#{i} {}", monitor_detail(m)),
+        ),
         MonitorChoice::NameContains(s) => format!("name contains {s:?}"),
     }
 }
@@ -129,9 +161,9 @@ impl Overlay {
             ctx,
             state,
             renderer,
-            open: false,
+            page: Page::Hidden,
             search: String::new(),
-            endpoints: onset_audio::capture::list_output_endpoints(),
+            endpoints: onset_audio::capture::list_endpoints(),
             rate: 1.0,
             seek: 0.0,
             dragging_seek: false,
@@ -139,25 +171,39 @@ impl Overlay {
     }
 
     pub fn is_open(&self) -> bool {
-        self.open
+        self.page != Page::Hidden
     }
 
+    pub fn page(&self) -> Page {
+        self.page
+    }
+
+    /// `Tab`: the settings panel over the show. Does nothing on the launcher, which is a
+    /// page of its own.
     pub fn toggle(&mut self, window: &Window) {
-        self.set_open(window, !self.open);
+        match self.page {
+            Page::Hidden => self.set_page(window, Page::Settings),
+            Page::Settings => self.set_page(window, Page::Hidden),
+            Page::Launcher => {}
+        }
     }
 
     pub fn set_open(&mut self, window: &Window, open: bool) {
-        self.open = open;
-        window.set_cursor_visible(self.open);
-        if self.open {
-            self.endpoints = onset_audio::capture::list_output_endpoints();
-        }
-        tracing::info!(open = self.open, "settings panel");
+        self.set_page(window, if open { Page::Settings } else { Page::Hidden });
     }
 
-    /// Feeds an event to egui while the panel is open; true when egui wants it exclusively.
+    pub fn set_page(&mut self, window: &Window, page: Page) {
+        self.page = page;
+        window.set_cursor_visible(self.is_open());
+        if self.is_open() {
+            self.endpoints = onset_audio::capture::list_endpoints();
+        }
+        tracing::info!(?page, "page");
+    }
+
+    /// Feeds an event to egui while a page is open; true when egui wants it exclusively.
     pub fn on_event(&mut self, window: &Window, event: &WindowEvent) -> bool {
-        if !self.open {
+        if !self.is_open() {
             return false;
         }
         self.state.on_window_event(window, event).consumed
@@ -172,7 +218,7 @@ impl Overlay {
         view: &OverlayView<'_>,
     ) -> DrawResult {
         let mut edits = Edits::default();
-        if !self.open {
+        if !self.is_open() {
             return DrawResult {
                 buffers: Vec::new(),
                 actions: edits.actions,
@@ -185,7 +231,20 @@ impl Overlay {
 
         let raw = self.state.take_egui_input(target.window);
         self.ctx.begin_pass(raw);
-        self.panel(config, view, &mut edits);
+        match self.page {
+            Page::Launcher => {
+                let ctx = self.ctx.clone();
+                launcher_page(
+                    &ctx,
+                    config,
+                    view,
+                    &view.calibration,
+                    &self.endpoints,
+                    &mut edits,
+                );
+            }
+            Page::Settings | Page::Hidden => self.panel(config, view, &mut edits),
+        }
         let mut out = self.ctx.end_pass();
         self.state
             .handle_platform_output(target.window, out.platform_output);
@@ -255,7 +314,7 @@ impl Overlay {
                 audio_section(ui, config, &self.endpoints, edits);
                 ui.separator();
                 ui.small(
-                    "Tab hides this panel  ·  H HUD  ·  C card  ·  B blackout  ·  Left/Right scene  ·  F fullscreen  ·  Esc closes, then quits",
+                    "Tab hides this panel  ·  H HUD  ·  C card  ·  B blackout  ·  Left/Right scene  ·  F fullscreen  ·  Esc closes, then leaves the show",
                 );
             });
     }
@@ -332,7 +391,7 @@ impl Overlay {
     }
 }
 
-fn output_section(
+pub fn output_section(
     ui: &mut egui::Ui,
     config: &mut Config,
     view: &OverlayView<'_>,
@@ -346,10 +405,10 @@ fn output_section(
                 config.output_monitor = MonitorChoice::Primary;
                 edits.changed = true;
             }
-            for (i, name) in view.monitors.iter().enumerate() {
+            for (i, m) in view.monitors.iter().enumerate() {
                 let selected = config.output_monitor == MonitorChoice::Index(i);
                 if ui
-                    .selectable_label(selected, format!("#{i} {name}"))
+                    .selectable_label(selected, format!("#{i} {}", monitor_detail(m)))
                     .clicked()
                 {
                     config.output_monitor = MonitorChoice::Index(i);
@@ -357,7 +416,7 @@ fn output_section(
                 }
             }
         });
-    ui.small("Applies at the next start.");
+    ui.small("Applies when the show starts.");
     ui.horizontal(|ui| {
         ui.label("Present");
         for (mode, name) in [
@@ -386,7 +445,7 @@ fn output_section(
     }
 }
 
-fn scene_section(
+pub fn scene_section(
     ui: &mut egui::Ui,
     config: &mut Config,
     view: &OverlayView<'_>,
@@ -416,7 +475,12 @@ fn scene_section(
     });
 }
 
-fn audio_section(ui: &mut egui::Ui, config: &mut Config, endpoints: &[String], edits: &mut Edits) {
+pub fn audio_section(
+    ui: &mut egui::Ui,
+    config: &mut Config,
+    endpoints: &[String],
+    edits: &mut Edits,
+) {
     let current = config
         .audio_device
         .clone()
@@ -471,8 +535,28 @@ mod tests {
 
     #[test]
     fn monitor_labels_name_the_choice() {
-        let m = vec!["DISPLAY1".to_string(), "DISPLAY2".to_string()];
-        assert_eq!(monitor_label(&m, &MonitorChoice::Index(1)), "#1 DISPLAY2");
+        let m = vec![
+            MonitorInfo {
+                name: "DISPLAY1".into(),
+                is_primary: true,
+                size: (2400, 1600),
+                scale: 1.5,
+            },
+            MonitorInfo {
+                name: "DISPLAY2".into(),
+                is_primary: false,
+                size: (1920, 1080),
+                scale: 1.0,
+            },
+        ];
+        assert_eq!(
+            monitor_label(&m, &MonitorChoice::Index(1)),
+            "#1 DISPLAY2 1920x1080"
+        );
+        assert_eq!(
+            monitor_label(&m, &MonitorChoice::Index(0)),
+            "#0 DISPLAY1 2400x1600 @150% (primary)"
+        );
         assert_eq!(
             monitor_label(&m, &MonitorChoice::Index(5)),
             "#5 (not connected)"

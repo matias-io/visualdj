@@ -24,6 +24,7 @@ pub enum PresentModeChoice {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
+#[allow(clippy::struct_excessive_bools)] // independent switches of a settings file
 pub struct Config {
     pub output_monitor: MonitorChoice,
     pub present_mode: PresentModeChoice,
@@ -32,6 +33,8 @@ pub struct Config {
     pub scene: String,
     pub show_hud: bool,
     pub show_card: bool,
+    /// Borderless fullscreen on the output monitor when the show starts.
+    pub fullscreen: bool,
     /// Track title the simulator loads at startup when no live transport is configured.
     pub sim_track: Option<String>,
     /// Substring of the loopback endpoint name; default output device when `None`.
@@ -51,6 +54,7 @@ impl Default for Config {
             scene: "ring".to_string(),
             show_hud: false,
             show_card: true,
+            fullscreen: true,
             sim_track: None,
             audio_device: None,
             read_only: false,
@@ -140,6 +144,7 @@ mod tests {
             scene: "warp".into(),
             show_hud: false,
             show_card: true,
+            fullscreen: false,
             sim_track: Some("Move".into()),
             audio_device: Some("NVIDIA".into()),
             read_only: false,
