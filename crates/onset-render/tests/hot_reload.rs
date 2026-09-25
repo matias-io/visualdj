@@ -22,7 +22,9 @@ fn frame(h: &Headless, r: &mut Renderer) -> Vec<u8> {
 fn broken_shader_keeps_previous_pipeline() {
     let h = Headless::new((16, 16), true).expect("adapter");
     let mut r = Renderer::new(&h.gpu, (16, 16), h.format);
-    let scene = FullscreenScene::new(&h.gpu, "live", RED, h.format, &r.bindings().layout).unwrap();
+    r.set_passthrough(true);
+    let scene =
+        FullscreenScene::new(&h.gpu, "live", RED, r.scene_format(), &r.bindings().layout).unwrap();
     r.add_scene(Box::new(scene));
 
     let before = hash_rgba(&frame(&h, &mut r));
@@ -47,6 +49,7 @@ fn broken_shader_keeps_previous_pipeline() {
 fn reloading_an_unknown_scene_is_an_error_not_a_panic() {
     let h = Headless::new((8, 8), true).expect("adapter");
     let mut r = Renderer::new(&h.gpu, (8, 8), h.format);
+    r.set_passthrough(true);
     assert!(r.reload_scene(&h.gpu, "nope", RED).is_err());
 }
 
@@ -54,7 +57,9 @@ fn reloading_an_unknown_scene_is_an_error_not_a_panic() {
 fn common_prelude_with_a_bigger_frame_is_rejected() {
     let h = Headless::new((8, 8), true).expect("adapter");
     let mut r = Renderer::new(&h.gpu, (8, 8), h.format);
-    let scene = FullscreenScene::new(&h.gpu, "live", RED, h.format, &r.bindings().layout).unwrap();
+    r.set_passthrough(true);
+    let scene =
+        FullscreenScene::new(&h.gpu, "live", RED, r.scene_format(), &r.bindings().layout).unwrap();
     r.add_scene(Box::new(scene));
     let before = hash_rgba(&frame(&h, &mut r));
 

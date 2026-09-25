@@ -98,6 +98,8 @@ pub struct CardFrame<'a> {
     /// Tempo being played, shown instead of the analysed BPM when known.
     pub live_bpm: f32,
     pub time_s: f32,
+    /// 0..1 pulse from the show director; the card grows a little with it.
+    pub emphasis: f32,
 }
 
 pub struct Card {
@@ -220,6 +222,7 @@ impl Card {
             theme,
             live_bpm,
             time_s,
+            emphasis,
         } = frame;
         let (fade_new, fade_old) = self.fade.alphas(time_s);
         let alpha_new = if self.current.is_some() {
@@ -232,7 +235,7 @@ impl Card {
         } else {
             0.0
         };
-        let k = size.1 as f32 / DESIGN_HEIGHT;
+        let k = size.1 as f32 / DESIGN_HEIGHT * (1.0 + 0.15 * emphasis.clamp(0.0, 1.0));
         let (w, h) = (size.0 as f32, size.1 as f32);
 
         let scrim_h = SCRIM_HEIGHT * k;

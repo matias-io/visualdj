@@ -202,10 +202,21 @@ mod tests {
 
     /// Feeds `hops` hops, with a hit of `amp` in `lo..hi` every `every` hops, and returns the
     /// maximum kick, snare and hat seen.
-    fn drive(r: &mut Reactor, lo: usize, hi: usize, amp: f32, every: usize, hops: usize) -> [f32; 3] {
+    fn drive(
+        r: &mut Reactor,
+        lo: usize,
+        hi: usize,
+        amp: f32,
+        every: usize,
+        hops: usize,
+    ) -> [f32; 3] {
         let mut max = [0.0f32; 3];
         for h in 0..hops {
-            let raw = if h % every < 2 { bands(lo, hi, amp) } else { bands(lo, hi, amp * 0.1) };
+            let raw = if h % every < 2 {
+                bands(lo, hi, amp)
+            } else {
+                bands(lo, hi, amp * 0.1)
+            };
             let out = r.update(&raw, &raw, 0.1);
             max[0] = max[0].max(out.kick);
             max[1] = max[1].max(out.snare);
@@ -246,7 +257,11 @@ mod tests {
         let loud = settle(5.0);
         assert!((quiet.levels[9] - loud.levels[9]).abs() < 0.05);
         assert!(loud.levels[9] > 0.9, "a steady tone reads near full scale");
-        assert!(loud.levels[22] < 0.1, "an empty band stays low: {}", loud.levels[22]);
+        assert!(
+            loud.levels[22] < 0.1,
+            "an empty band stays low: {}",
+            loud.levels[22]
+        );
         assert!(loud.groups[2] > loud.groups[5]);
     }
 
@@ -269,8 +284,12 @@ mod tests {
     #[test]
     fn brightness_follows_the_spectrum() {
         let mut r = Reactor::new(HOP_S);
-        let low = r.update(&bands(0, 4, 1.0), &bands(0, 4, 1.0), 0.1).brightness;
-        let high = r.update(&bands(20, 24, 1.0), &bands(20, 24, 1.0), 0.1).brightness;
+        let low = r
+            .update(&bands(0, 4, 1.0), &bands(0, 4, 1.0), 0.1)
+            .brightness;
+        let high = r
+            .update(&bands(20, 24, 1.0), &bands(20, 24, 1.0), 0.1)
+            .brightness;
         assert!(high > low + 0.5, "low {low} high {high}");
     }
 }

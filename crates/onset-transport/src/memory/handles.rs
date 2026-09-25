@@ -149,7 +149,8 @@ fn nt_path_to_dos(nt: &str) -> PathBuf {
         if n == 0 {
             continue;
         }
-        let device = String::from_utf16_lossy(&target[..target.iter().position(|c| *c == 0).unwrap_or(0)]);
+        let device =
+            String::from_utf16_lossy(&target[..target.iter().position(|c| *c == 0).unwrap_or(0)]);
         if let Some(rest) = nt.strip_prefix(&device) {
             return PathBuf::from(format!("{}:{rest}", letter as char));
         }

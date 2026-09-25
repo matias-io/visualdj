@@ -115,9 +115,14 @@ fn monitor_infos(event_loop: &ActiveEventLoop) -> (Vec<MonitorHandle>, Vec<Monit
 
 /// Loads the built-in scenes; a shader that fails to compile is reported and skipped so a
 /// broken file cannot take the whole output down.
-fn load_scenes(gpu: &Gpu, format: wgpu::TextureFormat, renderer: &mut Renderer) {
+fn load_scenes(gpu: &Gpu, renderer: &mut Renderer) {
     let dir = shader_dir();
-    let loaded = builtin_scenes(gpu, format, &renderer.bindings().layout, &dir);
+    let loaded = builtin_scenes(
+        gpu,
+        renderer.scene_format(),
+        &renderer.bindings().layout,
+        &dir,
+    );
     for scene in loaded.scenes {
         renderer.add_scene(scene);
     }
@@ -425,7 +430,7 @@ impl OnsetApp {
         renderer.set_show_card(self.opts.config.show_card && !launcher);
         renderer.set_show_hud(self.opts.config.show_hud && !launcher);
         renderer.set_internal_scale(&gpu, self.opts.config.internal_scale);
-        load_scenes(&gpu, format, &mut renderer);
+        load_scenes(&gpu, &mut renderer);
         let wanted = self
             .opts
             .scene
@@ -682,7 +687,11 @@ impl OnsetApp {
             }
             s.window.set_cursor_visible(false);
         }
-        tracing::info!(monitor = index, fullscreen = self.fullscreen, "show started");
+        tracing::info!(
+            monitor = index,
+            fullscreen = self.fullscreen,
+            "show started"
+        );
     }
 
     /// Back to the launcher: a plain window again, wherever it was.

@@ -10,8 +10,8 @@ use onset_transport::memory::offsets::{
     Anchor, DeckChains, DeckSignature, FlagField, Offsets, PositionFormat,
 };
 use onset_transport::memory::reader::{
-    ChainReader, DeckChooser, DeckFiles, FakeMem, PlayTracker, decks_from_hits,
-    parse_track_info, signature_matches,
+    ChainReader, DeckChooser, DeckFiles, FakeMem, PlayTracker, decks_from_hits, parse_track_info,
+    signature_matches,
 };
 
 const BASE: u64 = 0x1000_0000;
@@ -90,10 +90,7 @@ fn offsets_parse_rkbx_link_text_for_one_version() {
     let o = Offsets::from_rkbx_text(text, "7.2.2").expect("7.2.2 block");
     assert_eq!(o.rekordbox_version, "7.2.2");
     assert_eq!(o.decks.len(), 2);
-    assert_eq!(
-        o.master_deck,
-        Chain::from_rkbx_line("05737C48 20 278 124")
-    );
+    assert_eq!(o.master_deck, Chain::from_rkbx_line("05737C48 20 278 124"));
     assert_eq!(
         o.decks[1].bpm,
         Some(Chain::from_rkbx_line("0564B038 8 2B0 1A0").unwrap())
@@ -232,7 +229,10 @@ fn deck_chooser_follows_the_master_while_it_plays() {
     // The master sits idle while the other deck plays: the playing deck is the show.
     assert_eq!(chooser.choose(Some(1), &[Some(true), Some(false)]), Some(0));
     // Nothing plays: back to the master.
-    assert_eq!(chooser.choose(Some(1), &[Some(false), Some(false)]), Some(1));
+    assert_eq!(
+        chooser.choose(Some(1), &[Some(false), Some(false)]),
+        Some(1)
+    );
 }
 
 #[test]
@@ -265,8 +265,14 @@ fn signature_rekordbox() -> (FakeMem, DeckSignature) {
     let mut mem = FakeMem::new(BASE);
     let sig = DeckSignature {
         anchors: vec![
-            Anchor { offset: -0x20, module_offset: 0x1046 },
-            Anchor { offset: -0x50, module_offset: 0xeee3 },
+            Anchor {
+                offset: -0x20,
+                module_offset: 0x1046,
+            },
+            Anchor {
+                offset: -0x50,
+                module_offset: 0xeee3,
+            },
         ],
         max_decks: 4,
         master_flag: Some(FlagField {
@@ -291,7 +297,10 @@ fn signature_rekordbox() -> (FakeMem, DeckSignature) {
 fn signature_confirms_every_anchor() {
     let (mem, sig) = signature_rekordbox();
     assert!(signature_matches(&mem, &sig, 0x9000));
-    assert!(!signature_matches(&mem, &sig, 0x5000), "one anchor is not enough");
+    assert!(
+        !signature_matches(&mem, &sig, 0x5000),
+        "one anchor is not enough"
+    );
     assert!(!signature_matches(&mem, &sig, 0x9008));
 }
 
@@ -328,7 +337,11 @@ fn reader_reads_signature_decks_without_chains() {
     let b = reader.deck(1).expect("deck 2");
     assert!((b.position_s - 1.0).abs() < 1e-9);
     assert!(!reader.found_decks_stale());
-    assert_eq!(reader.master_deck(), Some(1), "the flag byte names the master");
+    assert_eq!(
+        reader.master_deck(),
+        Some(1),
+        "the flag byte names the master"
+    );
 }
 
 fn p(s: &str) -> PathBuf {
@@ -339,7 +352,9 @@ fn p(s: &str) -> PathBuf {
 fn deck_files_pairs_a_new_file_with_the_free_deck() {
     let mut files = DeckFiles::default();
     let none = |_: &Path| None;
-    let a = files.update(&[p("a.flac")], &[Some(10.0), Some(0.0)], &none).to_vec();
+    let a = files
+        .update(&[p("a.flac")], &[Some(10.0), Some(0.0)], &none)
+        .to_vec();
     assert_eq!(a, vec![Some(p("a.flac")), None]);
     // A second file while deck 1 keeps its track: only deck 2 is free.
     let b = files

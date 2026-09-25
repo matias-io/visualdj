@@ -114,7 +114,10 @@ impl LoopbackCapture {
 /// contains `endpoint_name` (inputs first, then outputs for loopback); without a name, the
 /// first DJ-gear recording input, else the default output for loopback.
 fn select_device(host: &Host, endpoint_name: Option<&str>) -> Option<(Device, bool)> {
-    let inputs: Vec<Device> = host.input_devices().map(Iterator::collect).unwrap_or_default();
+    let inputs: Vec<Device> = host
+        .input_devices()
+        .map(Iterator::collect)
+        .unwrap_or_default();
     if let Some(name) = endpoint_name {
         let needle = name.to_lowercase();
         if let Some(d) = inputs
@@ -130,7 +133,10 @@ fn select_device(host: &Host, endpoint_name: Option<&str>) -> Option<(Device, bo
             return Some((d, false));
         }
         tracing::warn!(name, "no audio endpoint matches; using the default route");
-    } else if let Some(d) = inputs.into_iter().find(|d| looks_like_dj_gear(&d.to_string())) {
+    } else if let Some(d) = inputs
+        .into_iter()
+        .find(|d| looks_like_dj_gear(&d.to_string()))
+    {
         return Some((d, true));
     }
     host.default_output_device().map(|d| (d, false))

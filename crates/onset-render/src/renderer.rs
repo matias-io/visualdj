@@ -1,18 +1,27 @@
-//! Owns the frame bindings and the scene list; renders the active scene into a target, then
-//! the overlays (Now Playing card, HUD) on top.
-use std::path::Path;
+//! Orchestrates a frame: the show director and autopilot react to the music, the active
+//! scene (two during a transition) renders into the stage's HDR targets, the stage adds
+//! bloom and the effects and writes the output, then the overlays (Now Playing card, HUD)
+//! go on top.
+use std::path::{Path, PathBuf};
 use std::time::Instant;
 
-use onset_core::music_state::MusicState;
+use onset_core::music_state::{DEFAULT_THEME, MusicState};
+use onset_core::show::{
+    AutoChange, AutoPilot, Fx, FxSettings, SceneProfile, ShowDirector, ShowEvent, Transition, Vibe,
+    vibe,
+};
+use serde::{Deserialize, Serialize};
 
+use crate::artwork::{ArtworkLoader, palette};
 use crate::card::{Card, CardFrame};
 use crate::gpu::Gpu;
 use crate::hot_reload::ShaderWatcher;
 use crate::hud::{Hud, HudInfo};
-use crate::quad::{QuadPipeline, QuadTexture};
-use crate::scene::{FrameBindings, Scene, ShaderError};
+use crate::scene::{FrameBindings, HISTORY_COLS, Scene, ShaderError};
+use crate::scenes::scene_info;
+use crate::stage::{HDR_FORMAT, PostUniforms, Stage};
 use crate::text::{TextItem, TextLayer};
-use crate::uniforms::FrameUniforms;
+use crate::uniforms::{FrameExtras, FrameUniforms};
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct FrameStats {
@@ -20,12 +29,116 @@ pub struct FrameStats {
     pub cpu_ms: f32,
 }
 
-/// Lowest internal scale the overlay offers; below this the upscale looks like a mistake.
+/// Lowest internal scale offered; below this the upscale looks like a mistake.
 pub const MIN_INTERNAL_SCALE: f32 = 0.5;
 
+/// Rendering detail. Higher levels raise the internal resolution, the ray-march steps
+/// scenes take, the bloom depth, and allow the heaviest scenes into Auto mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Quality {
+    Low,
+    Medium,
+    #[default]
+    High,
+    Ultra,
+}
+
+impl Quality {
+    pub const ALL: [Self; 4] = [Self::Low, Self::Medium, Self::High, Self::Ultra];
+
+    /// The value scenes read as `quality()`.
+    pub fn code(self) -> f32 {
+        match self {
+            Self::Low => 0.0,
+            Self::Medium => 1.0,
+            Self::High => 2.0,
+            Self::Ultra => 3.0,
+        }
+    }
+
+    pub fn internal_scale(self) -> f32 {
+        match self {
+            Self::Low => 0.5,
+            Self::Medium => 0.75,
+            Self::High | Self::Ultra => 1.0,
+        }
+    }
+
+    pub fn bloom_levels(self) -> usize {
+        match self {
+            Self::Low => 3,
+            Self::Medium => 4,
+            Self::High | Self::Ultra => 5,
+        }
+    }
+
+    /// Most expensive scene (by `SceneInfo::cost`) Auto mode may pick.
+    pub fn max_cost(self) -> u8 {
+        match self {
+            Self::Low => 1,
+            Self::Medium => 2,
+            Self::High | Self::Ultra => 3,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Low => "Low",
+            Self::Medium => "Medium",
+            Self::High => "High",
+            Self::Ultra => "Ultra",
+        }
+    }
+}
+
+/// Everything about the look the DJ controls.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RenderSettings {
+    pub fx: FxSettings,
+    pub quality: Quality,
+    /// Auto mode picks and changes scenes; otherwise the chosen scene stays on.
+    pub auto: bool,
+    pub auto_change: AutoChange,
+    /// Scenes in the Auto rotation; `None` uses each scene's default.
+    pub rotation: Option<Vec<String>>,
+}
+
+impl Default for RenderSettings {
+    fn default() -> Self {
+        Self {
+            fx: FxSettings::default(),
+            quality: Quality::default(),
+            auto: true,
+            auto_change: AutoChange::default(),
+            rotation: None,
+        }
+    }
+}
+
+struct ActiveTransition {
+    from: usize,
+    to: usize,
+    started: f32,
+    seconds: f32,
+    kind: Transition,
+}
+
+fn transition_code(t: Transition) -> f32 {
+    match t {
+        Transition::Crossfade => 0.0,
+        Transition::Flash => 1.0,
+        Transition::ZoomBlur => 2.0,
+        Transition::Glitch => 3.0,
+        Transition::Wipe => 4.0,
+    }
+}
+
+#[allow(clippy::struct_excessive_bools)] // independent switches: card, HUD, blackout, passthrough
 pub struct Renderer {
     format: wgpu::TextureFormat,
     bindings: FrameBindings,
+    stage: Stage,
     scenes: Vec<Box<dyn Scene>>,
     active: usize,
     size: (u32, u32),
@@ -41,20 +154,39 @@ pub struct Renderer {
     /// Window DPI factor; the HUD scales with it, the card scales with the frame height.
     scale: f32,
     last_cpu_ms: f32,
-    /// Scenes render at `internal_scale` of the output and are blitted up; 1.0 draws direct.
+    /// Scenes render at `internal_scale` of the output; the composite upscales.
     internal_scale: f32,
-    blit: QuadPipeline,
-    offscreen: Option<QuadTexture>,
     /// Output nothing but black: the DJ's panic button and the end-of-set fade target.
     blackout: bool,
     last_frame: Option<Instant>,
+    /// Seconds since start as of the current frame (transition timing).
+    frame_clock: f32,
+    /// Skip tonemapping and effects (tests that check exact colours).
+    passthrough: bool,
+
+    settings: RenderSettings,
+    show: ShowDirector,
+    autopilot: AutoPilot,
+    transition: Option<ActiveTransition>,
+    frame_index: u64,
+    vibe: Vibe,
+    last_events: Vec<ShowEvent>,
+    art_loader: ArtworkLoader,
+    art_path: Option<PathBuf>,
+    palette_now: [[f32; 3]; 5],
+    palette_target: [[f32; 3]; 5],
 }
 
 impl Renderer {
     pub fn new(gpu: &Gpu, size: (u32, u32), format: wgpu::TextureFormat) -> Self {
+        let settings = RenderSettings::default();
+        let stage = Stage::new(gpu, format, size, settings.quality.bloom_levels());
+        let mut bindings = FrameBindings::new(gpu);
+        bindings.set_prev_views(gpu, stage.mix_views());
         Self {
             format,
-            bindings: FrameBindings::new(gpu),
+            bindings,
+            stage,
             scenes: Vec::new(),
             active: 0,
             size,
@@ -68,11 +200,67 @@ impl Renderer {
             scale: 1.0,
             last_cpu_ms: 0.0,
             internal_scale: 1.0,
-            blit: QuadPipeline::new(gpu, format),
-            offscreen: None,
             blackout: false,
             last_frame: None,
+            frame_clock: 0.0,
+            passthrough: false,
+            settings,
+            show: ShowDirector::new(),
+            autopilot: AutoPilot::new(),
+            transition: None,
+            frame_index: 0,
+            vibe: Vibe {
+                energy: 0.5,
+                darkness: 0.5,
+            },
+            last_events: Vec::new(),
+            art_loader: ArtworkLoader::new(),
+            art_path: None,
+            palette_now: DEFAULT_THEME,
+            palette_target: DEFAULT_THEME,
         }
+    }
+
+    /// The format scene pipelines must target.
+    pub fn scene_format(&self) -> wgpu::TextureFormat {
+        HDR_FORMAT
+    }
+
+    pub fn output_format(&self) -> wgpu::TextureFormat {
+        self.format
+    }
+
+    pub fn set_passthrough(&mut self, on: bool) {
+        self.passthrough = on;
+    }
+
+    pub fn set_settings(&mut self, gpu: &Gpu, settings: RenderSettings) {
+        let quality_changed = settings.quality != self.settings.quality;
+        self.settings = settings;
+        if quality_changed {
+            self.rebuild_targets(gpu);
+        }
+    }
+
+    pub fn settings(&self) -> &RenderSettings {
+        &self.settings
+    }
+
+    /// The effects on screen this frame (for the launcher's meters).
+    pub fn fx(&self) -> Fx {
+        self.show.fx()
+    }
+
+    pub fn vibe(&self) -> Vibe {
+        self.vibe
+    }
+
+    pub fn last_events(&self) -> &[ShowEvent] {
+        &self.last_events
+    }
+
+    pub fn palette(&self) -> [[f32; 3]; 5] {
+        self.palette_now
     }
 
     pub fn set_blackout(&mut self, on: bool) {
@@ -84,14 +272,14 @@ impl Renderer {
     }
 
     /// Fraction of the output resolution scenes render at, clamped to
-    /// [`MIN_INTERNAL_SCALE`]..=1.0.
+    /// [`MIN_INTERNAL_SCALE`]..=1.0. The quality level's own scale multiplies it.
     pub fn set_internal_scale(&mut self, gpu: &Gpu, scale: f32) {
         self.internal_scale = if scale.is_finite() {
             scale.clamp(MIN_INTERNAL_SCALE, 1.0)
         } else {
             1.0
         };
-        self.rebuild_offscreen(gpu);
+        self.rebuild_targets(gpu);
     }
 
     pub fn internal_scale(&self) -> f32 {
@@ -100,20 +288,22 @@ impl Renderer {
 
     /// The size scenes actually render at.
     pub fn internal_size(&self) -> (u32, u32) {
-        if self.internal_scale >= 1.0 {
+        let k = (self.internal_scale * self.settings.quality.internal_scale()).max(0.25);
+        if k >= 0.999 {
             self.size
         } else {
             (
-                ((self.size.0 as f32 * self.internal_scale).round() as u32).max(1),
-                ((self.size.1 as f32 * self.internal_scale).round() as u32).max(1),
+                ((self.size.0 as f32 * k).round() as u32).max(1),
+                ((self.size.1 as f32 * k).round() as u32).max(1),
             )
         }
     }
 
-    fn rebuild_offscreen(&mut self, gpu: &Gpu) {
+    fn rebuild_targets(&mut self, gpu: &Gpu) {
         let internal = self.internal_size();
-        self.offscreen = (self.internal_scale < 1.0)
-            .then(|| self.blit.offscreen_target(gpu, internal, self.format));
+        self.stage
+            .resize(gpu, internal, self.settings.quality.bloom_levels());
+        self.bindings.set_prev_views(gpu, self.stage.mix_views());
         for s in &mut self.scenes {
             s.resize(gpu, internal);
         }
@@ -129,6 +319,10 @@ impl Renderer {
 
     pub fn set_show_card(&mut self, show: bool) {
         self.show_card = show;
+    }
+
+    pub fn show_card(&self) -> bool {
+        self.show_card
     }
 
     pub fn set_show_hud(&mut self, show: bool) {
@@ -228,14 +422,44 @@ impl Renderer {
     }
 
     pub fn active_scene(&self) -> Option<&str> {
-        self.scenes.get(self.active).map(|s| s.name())
+        let i = self.transition.as_ref().map_or(self.active, |t| t.to);
+        self.scenes.get(i).map(|s| s.name())
     }
 
-    /// Selects a scene by name; unknown names are ignored and reported.
+    fn start_transition(&mut self, to: usize, kind: Transition, seconds: f32) {
+        if to >= self.scenes.len() {
+            return;
+        }
+        let from = self.transition.as_ref().map_or(self.active, |t| t.to);
+        if from == to && self.transition.is_none() {
+            return;
+        }
+        let now = self.clock();
+        self.transition = Some(ActiveTransition {
+            from,
+            to,
+            started: now,
+            seconds: seconds.max(0.05),
+            kind,
+        });
+        self.autopilot.set_current(to);
+    }
+
+    fn clock(&self) -> f32 {
+        self.frame_clock
+    }
+
+    /// Selects a scene by name with a short crossfade; unknown names are ignored.
     pub fn set_scene(&mut self, name: &str) -> bool {
         match self.scenes.iter().position(|s| s.name() == name) {
             Some(i) => {
-                self.active = i;
+                if self.frame_index == 0 {
+                    // Before the first frame: no transition, just start there.
+                    self.active = i;
+                    self.autopilot.set_current(i);
+                } else {
+                    self.start_transition(i, Transition::Crossfade, 0.8);
+                }
                 true
             }
             None => false,
@@ -244,23 +468,117 @@ impl Renderer {
 
     pub fn next_scene(&mut self) {
         if !self.scenes.is_empty() {
-            self.active = (self.active + 1) % self.scenes.len();
+            let cur = self.transition.as_ref().map_or(self.active, |t| t.to);
+            self.start_transition((cur + 1) % self.scenes.len(), Transition::Crossfade, 0.8);
         }
     }
 
     pub fn prev_scene(&mut self) {
         if !self.scenes.is_empty() {
-            self.active = (self.active + self.scenes.len() - 1) % self.scenes.len();
+            let cur = self.transition.as_ref().map_or(self.active, |t| t.to);
+            let n = self.scenes.len();
+            self.start_transition((cur + n - 1) % n, Transition::Crossfade, 0.8);
         }
     }
 
     pub fn resize(&mut self, gpu: &Gpu, size: (u32, u32)) {
         self.size = size;
-        self.rebuild_offscreen(gpu);
+        self.rebuild_targets(gpu);
     }
 
-    /// Writes the uniforms for `ms`, renders the active scene into `target`, then the card
-    /// and HUD when enabled.
+    /// Scene profiles for Auto mode, in scene order, and which are allowed right now.
+    fn rotation(&self) -> (Vec<SceneProfile>, Vec<bool>) {
+        let max_cost = self.settings.quality.max_cost();
+        self.scenes
+            .iter()
+            .map(|s| {
+                let info = scene_info(s.name());
+                let profile = SceneProfile {
+                    name: s.name().to_string(),
+                    energy: info.map_or(0.5, |i| i.energy),
+                    darkness: info.map_or(0.5, |i| i.darkness),
+                    cost: info.map_or(1, |i| i.cost),
+                };
+                let wanted = match &self.settings.rotation {
+                    Some(list) => list.iter().any(|n| n == s.name()),
+                    None => info.is_some_and(|i| i.auto),
+                };
+                let allowed = wanted && profile.cost <= max_cost;
+                (profile, allowed)
+            })
+            .unzip()
+    }
+
+    /// Cover art for the scenes and the palette, decoded off-thread.
+    fn follow_artwork(&mut self, gpu: &Gpu, ms: &MusicState, dt: f32) {
+        let wanted = ms.track.as_ref().and_then(|t| t.artwork_path.clone());
+        if wanted != self.art_path {
+            self.art_path.clone_from(&wanted);
+            match &wanted {
+                Some(p) => self.art_loader.request(p.clone()),
+                None => self.palette_target = DEFAULT_THEME,
+            }
+        }
+        while let Some((path, image)) = self.art_loader.try_take() {
+            if self.art_path.as_deref() == Some(path.as_path()) {
+                self.bindings.set_artwork(gpu, &image);
+                self.palette_target = palette(&image, &DEFAULT_THEME);
+                self.vibe = vibe(ms.track.as_ref(), ms.mood, &self.palette_target);
+            }
+        }
+        let k = 1.0 - (-dt / 1.2).exp();
+        for (now, target) in self.palette_now.iter_mut().zip(&self.palette_target) {
+            for (a, b) in now.iter_mut().zip(target) {
+                *a += (b - *a) * k;
+            }
+        }
+    }
+
+    fn post_uniforms(
+        &self,
+        ms: &MusicState,
+        time_s: f32,
+        fx: &Fx,
+        t: Option<(f32, f32)>,
+    ) -> PostUniforms {
+        let s = &self.settings.fx;
+        // Shake: two incommensurate wobbles, so it never looks like a loop.
+        let amp = fx.shake * 0.012;
+        let shake = [
+            amp * ((time_s * 37.0).sin() * 0.6 + (time_s * 23.0).sin() * 0.4),
+            amp * ((time_s * 31.0).cos() * 0.6 + (time_s * 19.0).sin() * 0.4),
+        ];
+        let (progress, kind) = t.unwrap_or((0.0, 0.0));
+        let intensity = ms.intensity.clamp(0.0, 1.0);
+        PostUniforms {
+            res_texel: [
+                self.size.0 as f32,
+                self.size.1 as f32,
+                1.0 / self.size.0.max(1) as f32,
+                1.0 / self.size.1.max(1) as f32,
+            ],
+            a: [time_s, fx.flash, fx.invert, fx.hue],
+            flash_col: [
+                fx.flash_color[0],
+                fx.flash_color[1],
+                fx.flash_color[2],
+                fx.strobe,
+            ],
+            motion: [shake[0], shake[1], fx.zoom, fx.glitch],
+            look: [
+                s.bloom * (0.55 + 0.45 * intensity),
+                s.grain,
+                0.35,
+                0.0015 + 0.004 * fx.drop_hit,
+            ],
+            tone: [1.0, fx.seed, 0.9, if self.blackout { 1.0 } else { 0.0 }],
+            trans: [progress, kind, 0.0, fx.tension],
+        }
+    }
+
+    /// Updates the show, renders the scene(s) through the stage into `target`, then the
+    /// card and HUD when enabled.
+    #[allow(clippy::too_many_lines)] // one frame, read top to bottom
     pub fn render(
         &mut self,
         gpu: &Gpu,
@@ -275,6 +593,68 @@ impl Renderer {
             .map(|t| started.duration_since(t).as_secs_f32() * 1000.0);
         self.last_frame = Some(started);
         self.hud.record(interval_ms, self.last_cpu_ms);
+        let dt = interval_ms.map_or(1.0 / 60.0, |ms| (ms / 1000.0).clamp(0.0, 0.1));
+        self.frame_clock = time_s;
+
+        // The show: events, effects, and in Auto mode the next scene.
+        self.follow_artwork(gpu, ms, dt);
+        let events = self.show.update(ms, dt, &self.settings.fx);
+        if events.contains(&ShowEvent::Track) {
+            self.vibe = vibe(ms.track.as_ref(), ms.mood, &self.palette_target);
+        }
+        if self.settings.auto && !self.scenes.is_empty() {
+            let (profiles, allowed) = self.rotation();
+            if let Some(change) = self.autopilot.on_events(
+                &events,
+                self.vibe,
+                &profiles,
+                &allowed,
+                self.settings.auto_change,
+                self.settings.fx.chaos,
+            ) {
+                tracing::info!(scene = %profiles[change.index].name, ?change.transition, "auto scene");
+                self.start_transition(change.index, change.transition, change.seconds);
+            }
+        }
+        if !events.is_empty() {
+            self.last_events = events;
+        }
+        let fx = self.show.fx();
+
+        // Transition bookkeeping.
+        let mut transition = None;
+        if let Some(t) = &self.transition {
+            let p = (time_s - t.started) / t.seconds;
+            if !(0.0..1.0).contains(&p) || t.from >= self.scenes.len() {
+                self.active = t.to;
+                self.transition = None;
+            } else {
+                transition = Some((t.from, t.to, p, transition_code(t.kind)));
+            }
+        }
+
+        // Spectrum history and the frame uniforms.
+        let mut row = [0.0f32; HISTORY_COLS as usize];
+        row[..24].copy_from_slice(&ms.audio.levels);
+        row[24..30].copy_from_slice(&ms.audio.groups);
+        row[30] = ms.audio.kick;
+        row[31] = ms.audio.snare;
+        self.bindings.push_history(gpu, &row);
+        let internal = self.stage.size();
+        let extras = FrameExtras {
+            fx,
+            vibe: self.vibe,
+            reactivity: self.settings.fx.reactivity,
+            trails: self.settings.fx.trails,
+            quality: self.settings.quality.code(),
+            history_row: self.bindings.history_row(),
+            theme: Some(self.palette_now),
+        };
+        self.bindings.write(
+            gpu,
+            &FrameUniforms::from_state_with(ms, internal, time_s, &extras),
+        );
+
         if self.blackout || self.scenes.is_empty() {
             clear_to_black(encoder, target);
         }
@@ -283,37 +663,30 @@ impl Renderer {
             self.last_cpu_ms = cpu_ms;
             return FrameStats { cpu_ms };
         }
-        let internal = self.internal_size();
-        self.bindings
-            .write(gpu, &FrameUniforms::from_state(ms, internal, time_s));
-        match (&self.offscreen, self.scenes.get_mut(self.active)) {
-            (Some(off), Some(scene)) => {
-                scene.render(gpu, encoder, &off.view, &self.bindings);
-                off.place(
-                    gpu,
-                    [0.0, 0.0, self.size.0 as f32, self.size.1 as f32],
-                    self.size,
-                    1.0,
-                );
-                let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                    label: Some("upscale"),
-                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                        view: target,
-                        depth_slice: None,
-                        resolve_target: None,
-                        ops: wgpu::Operations {
-                            load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
-                            store: wgpu::StoreOp::Store,
-                        },
-                    })],
-                    ..Default::default()
-                });
-                self.blit.draw(&mut pass, off);
-            }
-            (None, Some(scene)) => scene.render(gpu, encoder, target, &self.bindings),
-            (_, None) => {}
-        }
 
+        if !self.scenes.is_empty() {
+            let cur = (self.frame_index % 2) as usize;
+            self.bindings.select(1 - cur);
+            let mut post =
+                self.post_uniforms(ms, time_s, &fx, transition.map(|(_, _, p, k)| (p, k)));
+            if self.passthrough {
+                post.trans[2] = 1.0;
+            }
+            self.stage.write(gpu, &post);
+            if let Some((from, to, _, _)) = transition {
+                self.scenes[from].render(gpu, encoder, self.stage.scene_view(0), &self.bindings);
+                self.scenes[to].render(gpu, encoder, self.stage.scene_view(1), &self.bindings);
+                self.stage.run_transition(gpu, encoder, cur);
+            } else {
+                let active = self.active.min(self.scenes.len() - 1);
+                self.scenes[active].render(gpu, encoder, self.stage.mix_view(cur), &self.bindings);
+            }
+            self.stage.finish(gpu, encoder, cur, target);
+        }
+        self.frame_index += 1;
+
+        // Overlays grow a little on emphasis (track change, drop).
+        let grow = 1.0 + 0.12 * fx.emphasis;
         let mut items: Vec<TextItem> = Vec::new();
         self.card
             .update(gpu, ms.track.as_ref().filter(|_| self.show_card), time_s);
@@ -325,9 +698,10 @@ impl Renderer {
                 &mut self.text,
                 CardFrame {
                     size: self.size,
-                    theme: &ms.theme,
+                    theme: &self.palette_now,
                     live_bpm: ms.bpm,
                     time_s,
+                    emphasis: fx.emphasis,
                 },
             ));
         }
@@ -339,7 +713,7 @@ impl Renderer {
                 last_error: self.last_error.clone(),
                 source: self.source_line.clone(),
             };
-            items.extend(self.hud.items(ms, &info, self.scale));
+            items.extend(self.hud.items(ms, &info, self.scale * grow));
         }
         if !items.is_empty() {
             match self.text.prepare(gpu, self.size, &items) {

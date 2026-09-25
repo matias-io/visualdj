@@ -22,7 +22,9 @@ fn frame(h: &Headless, r: &mut Renderer) -> Vec<u8> {
 fn setup(size: (u32, u32), shader: &str) -> (Headless, Renderer) {
     let h = Headless::new(size, true).expect("adapter");
     let mut r = Renderer::new(&h.gpu, size, h.format);
-    let scene = FullscreenScene::new(&h.gpu, "s", shader, h.format, &r.bindings().layout).unwrap();
+    r.set_passthrough(true);
+    let scene =
+        FullscreenScene::new(&h.gpu, "s", shader, r.scene_format(), &r.bindings().layout).unwrap();
     r.add_scene(Box::new(scene));
     r.set_show_card(false);
     (h, r)
@@ -104,6 +106,7 @@ fn resize_rebuilds_the_offscreen_target_and_keeps_overlays_at_full_size() {
 fn a_renderer_without_scenes_clears_to_black() {
     let h = Headless::new((16, 16), true).expect("adapter");
     let mut r = Renderer::new(&h.gpu, (16, 16), h.format);
+    r.set_passthrough(true);
     r.set_show_card(false);
     let px = frame(&h, &mut r);
     assert!(

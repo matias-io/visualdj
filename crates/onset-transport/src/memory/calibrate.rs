@@ -153,10 +153,17 @@ mod tests {
     /// Two decks of the same class; the first also holds a pointer only it has.
     fn two_decks() -> (FakeMem, Vec<Anchor>) {
         let mut mem = FakeMem::new(BASE);
-        let shared = [anchor(-0x20, 0x100), anchor(-0x50, 0x200), anchor(-0x80, 0x300)];
+        let shared = [
+            anchor(-0x20, 0x100),
+            anchor(-0x50, 0x200),
+            anchor(-0x80, 0x300),
+        ];
         for pos in [0x9000u64, 0x7000] {
             for a in &shared {
-                mem.put_u64(pos.checked_add_signed(a.offset).unwrap(), BASE + a.module_offset);
+                mem.put_u64(
+                    pos.checked_add_signed(a.offset).unwrap(),
+                    BASE + a.module_offset,
+                );
             }
         }
         mem.put_u64(0x9000 - 0xa0, BASE + 0x999);

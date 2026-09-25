@@ -239,7 +239,11 @@ fn toggled_runs(before: &[u8], during: &[u8], after: &[u8]) -> Vec<(usize, usize
 }
 
 fn hex_bytes(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{b:02x}")).collect::<Vec<_>>().join(" ")
+    bytes
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// Finds the master-deck state by difference: snapshots the objects along both decks'
@@ -261,7 +265,10 @@ pub fn memmaster(deck1: &str, deck2: &str, wait_s: u64, window: usize) -> anyhow
             objects.push((name.clone(), chain.root, obj));
         }
     }
-    println!("{} object(s) along the chains; {window:#x} bytes watched in each", objects.len());
+    println!(
+        "{} object(s) along the chains; {window:#x} bytes watched in each",
+        objects.len()
+    );
     let statics = p.static_regions();
     let snap = |p: &Process| -> (Vec<Vec<u8>>, Vec<Vec<u8>>) {
         let objs = objects

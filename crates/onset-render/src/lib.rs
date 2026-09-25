@@ -13,5 +13,6 @@ pub mod quad;
 pub mod renderer;
 pub mod scene;
 pub mod scenes;
+pub mod stage;
 pub mod text;
 pub mod uniforms;

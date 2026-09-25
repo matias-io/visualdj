@@ -203,7 +203,12 @@ impl<M: Mem> ChainReader<M> {
     pub fn signature_needle(&self) -> Option<[u8; 8]> {
         let sig = self.offsets.signature.as_ref()?;
         let first = sig.anchors.first()?;
-        Some(self.mem.module_base().wrapping_add(first.module_offset).to_le_bytes())
+        Some(
+            self.mem
+                .module_base()
+                .wrapping_add(first.module_offset)
+                .to_le_bytes(),
+        )
     }
 
     /// Replaces the signature's anchors (a runtime repair of a file that finds one deck).
@@ -268,12 +273,15 @@ impl<M: Mem> ChainReader<M> {
     pub fn master_deck(&self) -> Option<u8> {
         if let Some(sig) = self.offsets.signature.as_ref() {
             let flag = sig.master_flag.as_ref()?;
-            return self.found.iter().position(|pos| {
-                pos.checked_add_signed(flag.offset)
-                    .and_then(|a| self.mem.read_u8(a).ok())
-                    .is_some_and(|b| b & flag.mask != 0)
-            })
-            .and_then(|i| u8::try_from(i).ok());
+            return self
+                .found
+                .iter()
+                .position(|pos| {
+                    pos.checked_add_signed(flag.offset)
+                        .and_then(|a| self.mem.read_u8(a).ok())
+                        .is_some_and(|b| b & flag.mask != 0)
+                })
+                .and_then(|i| u8::try_from(i).ok());
         }
         let chain = self.offsets.master_deck.as_ref()?;
         let addr = resolve_chain(&self.mem, chain)?;
@@ -590,9 +598,9 @@ mod live {
     use onset_core::transport::TrackRef;
 
     use super::super::REKORDBOX_EXE;
+    use super::super::calibrate::shared_signature;
     use super::super::handles::open_audio_files;
     use super::super::process::Process;
-    use super::super::calibrate::shared_signature;
     use super::super::scan::{find_bytes, find_u64_values};
     use super::{
         ChainReader, DeckChooser, DeckFiles, DeckState, Mem, PlayTracker, snapshot_from_deck,
@@ -632,10 +640,11 @@ mod live {
     /// any Sampler folder and at least half a minute long. rekordbox keeps every loaded
     /// sampler slot open too.
     fn is_deck_candidate(path: &Path, durations: &HashMap<String, f64>) -> bool {
-        if path
-            .components()
-            .any(|c| c.as_os_str().to_string_lossy().eq_ignore_ascii_case("sampler"))
-        {
+        if path.components().any(|c| {
+            c.as_os_str()
+                .to_string_lossy()
+                .eq_ignore_ascii_case("sampler")
+        }) {
             return false;
         }
         if durations.is_empty() {
@@ -827,11 +836,11 @@ mod live {
         }
 
         fn set_file_durations(&mut self, table: Vec<(PathBuf, f64)>) {
-            self.durations = table
-                .into_iter()
-                .map(|(p, d)| (norm_path(&p), d))
-                .collect();
-            tracing::info!(files = self.durations.len(), "library file lengths received");
+            self.durations = table.into_iter().map(|(p, d)| (norm_path(&p), d)).collect();
+            tracing::info!(
+                files = self.durations.len(),
+                "library file lengths received"
+            );
         }
 
         fn poll(&mut self) -> Option<TransportSnapshot> {
@@ -887,8 +896,10 @@ mod live {
                         .zip(trackers.iter_mut())
                         .map(|(s, t)| s.as_ref().map(|s| t.update(s.position_s, now)))
                         .collect();
-                    let positions: Vec<Option<f64>> =
-                        states.iter().map(|s| s.as_ref().map(|s| s.position_s)).collect();
+                    let positions: Vec<Option<f64>> = states
+                        .iter()
+                        .map(|s| s.as_ref().map(|s| s.position_s))
+                        .collect();
                     let durations = &self.durations;
                     let before: Vec<Option<PathBuf>> = (0..positions.len())
                         .map(|i| deck_files.file_for(i).cloned())

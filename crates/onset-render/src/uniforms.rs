@@ -2,7 +2,8 @@
 //! `struct Frame` in `assets/shaders/common.wgsl`.
 use onset_core::audio_features::BANDS;
 use onset_core::music_state::MusicState;
-use onset_core::phrase::PhraseKind;
+use onset_core::phrase::{Mood, PhraseKind};
+use onset_core::show::{Fx, Vibe};
 
 /// std140 layout: scalars are f32 so packing is predictable; arrays are vec4 groups.
 #[repr(C)]
@@ -34,6 +35,58 @@ pub struct FrameUniforms {
     pub bands: [[f32; 4]; 6],
     /// Background, text, accent 1..3 as linear RGB (alpha unused).
     pub theme: [[f32; 4]; 5],
+
+    /// The 24 bands normalised 0..1.
+    pub levels: [[f32; 4]; 6],
+    /// Sub, bass, low-mid, mid.
+    pub groups: [f32; 4],
+    /// High-mid, treble, loudness, brightness.
+    pub groups2: [f32; 4],
+    /// Kick, snare, hat, onset.
+    pub hits: [f32; 4],
+    /// Drop, phrase, cue and track markers.
+    pub fx0: [f32; 4],
+    /// Tension, beat count, bar count, seed.
+    pub fx1: [f32; 4],
+    /// Hue shift (turns), reactivity, trails, quality.
+    pub fx2: [f32; 4],
+    /// Last cue colour and cue marker.
+    pub cue: [f32; 4],
+    /// Energy, darkness, mood code, history row.
+    pub vibe: [f32; 4],
+}
+
+/// Everything the uniforms carry beyond the music state: the show director's effects, the
+/// track's vibe, the DJ's settings and the renderer's own bookkeeping.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct FrameExtras {
+    pub fx: Fx,
+    pub vibe: Vibe,
+    pub reactivity: f32,
+    pub trails: f32,
+    /// 0 low .. 3 ultra.
+    pub quality: f32,
+    /// Newest row of the spectrum history texture, as a 0..1 texture coordinate.
+    pub history_row: f32,
+    /// The palette to use instead of the state's (from the cover art).
+    pub theme: Option<[[f32; 3]; 5]>,
+}
+
+impl Default for FrameExtras {
+    fn default() -> Self {
+        Self {
+            fx: Fx::default(),
+            vibe: Vibe {
+                energy: 0.5,
+                darkness: 0.5,
+            },
+            reactivity: 1.0,
+            trails: 0.0,
+            quality: 2.0,
+            history_row: 0.0,
+            theme: None,
+        }
+    }
 }
 
 const _: () = assert!(std::mem::size_of::<FrameUniforms>().is_multiple_of(16));
@@ -58,14 +111,36 @@ fn optional_count(v: Option<u32>) -> f32 {
 
 impl FrameUniforms {
     pub fn from_state(ms: &MusicState, resolution: (u32, u32), time_s: f32) -> Self {
+        Self::from_state_with(ms, resolution, time_s, &FrameExtras::default())
+    }
+
+    pub fn from_state_with(
+        ms: &MusicState,
+        resolution: (u32, u32),
+        time_s: f32,
+        x: &FrameExtras,
+    ) -> Self {
         let mut bands = [[0.0f32; 4]; 6];
         for (i, b) in ms.audio.bands.iter().enumerate() {
             bands[i / 4][i % 4] = *b;
         }
+        let mut levels = [[0.0f32; 4]; 6];
+        for (i, b) in ms.audio.levels.iter().enumerate() {
+            levels[i / 4][i % 4] = *b;
+        }
+        let palette = x.theme.unwrap_or(ms.theme);
         let mut theme = [[0.0f32; 4]; 5];
-        for (dst, src) in theme.iter_mut().zip(ms.theme.iter()) {
+        for (dst, src) in theme.iter_mut().zip(palette.iter()) {
             *dst = [src[0], src[1], src[2], 1.0];
         }
+        let a = &ms.audio;
+        let fx = &x.fx;
+        let mood = match ms.mood {
+            None => 0.0,
+            Some(Mood::Low) => 1.0,
+            Some(Mood::Mid) => 2.0,
+            Some(Mood::High) => 3.0,
+        };
         Self {
             resolution: [resolution.0 as f32, resolution.1 as f32],
             time: time_s,
@@ -84,6 +159,20 @@ impl FrameUniforms {
             onset: if ms.audio.onset { 1.0 } else { 0.0 },
             bands,
             theme,
+            levels,
+            groups: [a.groups[0], a.groups[1], a.groups[2], a.groups[3]],
+            groups2: [a.groups[4], a.groups[5], a.loudness, a.brightness],
+            hits: [a.kick, a.snare, a.hat, if a.onset { 1.0 } else { 0.0 }],
+            fx0: [fx.drop_hit, fx.phrase_hit, fx.cue_hit, fx.track_hit],
+            fx1: [fx.tension, fx.beat_count, fx.bar_count, fx.seed],
+            fx2: [fx.hue, x.reactivity, x.trails, x.quality],
+            cue: [
+                fx.flash_color[0],
+                fx.flash_color[1],
+                fx.flash_color[2],
+                fx.cue_hit,
+            ],
+            vibe: [x.vibe.energy, x.vibe.darkness, mood, x.history_row],
         }
     }
 }

@@ -5,7 +5,9 @@ use std::path::Path;
 
 use crate::config::Config;
 use crate::engine::EngineStatus;
-use crate::overlay::{Edits, OverlayAction, OverlayView, audio_section, output_section, scene_section};
+use crate::overlay::{
+    Edits, OverlayAction, OverlayView, audio_section, output_section, scene_section,
+};
 
 /// Window size the launcher opens at, in logical pixels (scaled by the monitor's DPI).
 pub const LAUNCHER_SIZE: (f64, f64) = (980.0, 820.0);
@@ -90,9 +92,15 @@ pub struct CalibrationView<'a> {
 /// Shortcuts that work during the show, with what they do.
 pub const SHORTCUTS: &[(&str, &str)] = &[
     ("F", "fullscreen on / off"),
-    ("Esc", "back to this launcher (closes the settings panel first)"),
+    (
+        "Esc",
+        "back to this launcher (closes the settings panel first)",
+    ),
     ("Tab", "settings panel over the show"),
-    ("H", "HUD (frame time, rekordbox link, phrase, drop countdown)"),
+    (
+        "H",
+        "HUD (frame time, rekordbox link, phrase, drop countdown)",
+    ),
     ("C", "now-playing card"),
     ("B", "blackout"),
     ("Left / Right", "previous / next scene"),
@@ -216,7 +224,10 @@ fn calibration_section(ui: &mut egui::Ui, cal: &CalibrationView<'_>, edits: &mut
         ui.label("Calibrating. Do each step as it appears; the calibrator sees it and moves on:");
     } else {
         ui.horizontal(|ui| {
-            if ui.button("Calibrate this rekordbox (about two minutes)").clicked() {
+            if ui
+                .button("Calibrate this rekordbox (about two minutes)")
+                .clicked()
+            {
                 edits.actions.push(OverlayAction::Calibrate);
             }
         });
@@ -245,25 +256,28 @@ fn calibration_section(ui: &mut egui::Ui, cal: &CalibrationView<'_>, edits: &mut
 
 fn shortcuts_section(ui: &mut egui::Ui, simulator: bool) {
     ui.heading("Shortcuts during the show");
-    egui::Grid::new("shortcuts").num_columns(2).spacing([18.0, 4.0]).show(ui, |ui| {
-        for (key, what) in SHORTCUTS {
-            ui.monospace(*key);
-            ui.label(*what);
-            ui.end_row();
-        }
-        if simulator {
-            for (key, what) in [
-                ("Space", "play / pause the simulator"),
-                ("Home", "restart the simulated track"),
-                ("[ / ]", "simulator rate down / up"),
-                ("R", "reload the simulated track"),
-            ] {
-                ui.monospace(key);
-                ui.label(what);
+    egui::Grid::new("shortcuts")
+        .num_columns(2)
+        .spacing([18.0, 4.0])
+        .show(ui, |ui| {
+            for (key, what) in SHORTCUTS {
+                ui.monospace(*key);
+                ui.label(*what);
                 ui.end_row();
             }
-        }
-    });
+            if simulator {
+                for (key, what) in [
+                    ("Space", "play / pause the simulator"),
+                    ("Home", "restart the simulated track"),
+                    ("[ / ]", "simulator rate down / up"),
+                    ("R", "reload the simulated track"),
+                ] {
+                    ui.monospace(key);
+                    ui.label(what);
+                    ui.end_row();
+                }
+            }
+        });
 }
 
 #[cfg(test)]
@@ -275,8 +289,9 @@ mod tests {
         let (light, _, hint) = readiness(&EngineStatus::Waiting("waiting for rekordbox".into()));
         assert_eq!(light, Light::Red);
         assert!(hint.contains("Start rekordbox"));
-        let (light, _, hint) =
-            readiness(&EngineStatus::Waiting("no offsets for rekordbox 7.2.19".into()));
+        let (light, _, hint) = readiness(&EngineStatus::Waiting(
+            "no offsets for rekordbox 7.2.19".into(),
+        ));
         assert_eq!(light, Light::Amber);
         assert!(hint.contains("calibration"));
         assert_eq!(readiness(&EngineStatus::Idle).0, Light::Green);

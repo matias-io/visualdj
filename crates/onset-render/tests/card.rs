@@ -40,7 +40,9 @@ fn frame(h: &Headless, r: &mut Renderer, ms: &MusicState, time_s: f32) -> Vec<u8
 fn setup(size: (u32, u32)) -> (Headless, Renderer) {
     let h = Headless::new(size, true).expect("adapter");
     let mut r = Renderer::new(&h.gpu, size, h.format);
-    let scene = FullscreenScene::new(&h.gpu, "flat", FLAT, h.format, &r.bindings().layout).unwrap();
+    r.set_passthrough(true);
+    let scene =
+        FullscreenScene::new(&h.gpu, "flat", FLAT, r.scene_format(), &r.bindings().layout).unwrap();
     r.add_scene(Box::new(scene));
     r.set_scale(1.0);
     (h, r)

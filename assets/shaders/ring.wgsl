@@ -1,7 +1,6 @@
 // Ring: 24 radial bars, one per band, around a ring that breathes with the beat. As a drop
 // approaches, a second ring closes in from outside; at the drop it merges with the main ring.
 
-const TAU: f32 = 6.28318530718;
 
 fn soft_band(x: f32, centre: f32, half_width: f32, feather: f32) -> f32 {
     let d = abs(x - centre);

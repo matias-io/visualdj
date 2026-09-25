@@ -76,7 +76,9 @@ impl Library {
                     .map(|i| paths.resolve_share(&i)),
                 analysis_path: r.get::<_, Option<String>>(10)?.filter(|p| !p.is_empty()),
                 isrc: r.get::<_, Option<String>>(11)?.filter(|s| !s.is_empty()),
-                genre: r.get::<_, Option<String>>(13)?.filter(|s| !s.trim().is_empty()),
+                genre: r
+                    .get::<_, Option<String>>(13)?
+                    .filter(|s| !s.trim().is_empty()),
             })
         })?;
         let tracks: Vec<TrackMeta> = rows.collect::<Result<_, _>>()?;

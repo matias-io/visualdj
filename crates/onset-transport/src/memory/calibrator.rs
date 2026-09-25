@@ -209,11 +209,15 @@ fn ranked_counters(s: &mut Session<'_>, p: &Process) -> anyhow::Result<Vec<Count
 /// while it is paused, and continues from the same value when play resumes.
 fn absolute_position_counters(s: &mut Session<'_>, p: &Process) -> anyhow::Result<Vec<Counter>> {
     let counters = ranked_counters(s, p)?;
-    wait_for(s, "Step 2: pause that deck (press play/pause once).", || {
-        // Every counter here was advancing; a few of them stopping is the pause (time-
-        // since-play clocks and any other deck keep running).
-        count_still(p, &counters, Duration::from_millis(300)) >= MIN_STOPPED
-    })?;
+    wait_for(
+        s,
+        "Step 2: pause that deck (press play/pause once).",
+        || {
+            // Every counter here was advancing; a few of them stopping is the pause (time-
+            // since-play clocks and any other deck keep running).
+            count_still(p, &counters, Duration::from_millis(300)) >= MIN_STOPPED
+        },
+    )?;
     let held = snapshot_counters(p, &counters);
     s.sleep(Duration::from_millis(500))?;
     let again = snapshot_counters(p, &counters);
@@ -312,7 +316,10 @@ fn best_signature(
         if anchors.len() < MIN_ANCHORS {
             continue;
         }
-        let key: Vec<(i64, u64)> = anchors.iter().map(|a| (a.offset, a.module_offset)).collect();
+        let key: Vec<(i64, u64)> = anchors
+            .iter()
+            .map(|a| (a.offset, a.module_offset))
+            .collect();
         by_set.entry(key).or_default().push(*c);
     }
     let (key, members) = by_set
@@ -409,7 +416,9 @@ fn refine(
         bail!("the deck objects share too few pointers to recognise them");
     }
     if shared.decks.len() < 2 {
-        s.say("  only one deck object found; decks that have never loaded a track may not exist yet");
+        s.say(
+            "  only one deck object found; decks that have never loaded a track may not exist yet",
+        );
     }
     Ok((kept, shared.decks))
 }
