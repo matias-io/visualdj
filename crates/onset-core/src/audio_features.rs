@@ -3,6 +3,8 @@
 
 /// Number of log-spaced frequency bands the analyzer reports.
 pub const BANDS: usize = 24;
+/// Frequency groups: sub, bass, low-mid, mid, high-mid, treble.
+pub const GROUPS: usize = 6;
 
 /// Audio features for a single analysis hop: band energies, loudness, and onset/silence flags.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -15,6 +17,18 @@ pub struct AudioFeatures {
     pub onset: bool,
     /// True when the signal has been below the silence threshold for enough consecutive hops.
     pub silent: bool,
+    /// Each band normalised to 0..1 against its own recent peak (volume-independent).
+    pub levels: [f32; BANDS],
+    /// Mean level of sub, bass, low-mid, mid, high-mid and treble, 0..1.
+    pub groups: [f32; GROUPS],
+    /// Drum hits, 1 at the hit and decaying over about a tenth of a second.
+    pub kick: f32,
+    pub snare: f32,
+    pub hat: f32,
+    /// Loudness relative to the last twenty seconds' peak, 0..1.
+    pub loudness: f32,
+    /// Spectral centroid mapped to 0 (all bass) ..1 (all treble).
+    pub brightness: f32,
 }
 
 impl AudioFeatures {
@@ -26,6 +40,13 @@ impl AudioFeatures {
             rms: 0.0,
             onset: false,
             silent: true,
+            levels: [0.0; BANDS],
+            groups: [0.0; GROUPS],
+            kick: 0.0,
+            snare: 0.0,
+            hat: 0.0,
+            loudness: 0.0,
+            brightness: 0.0,
         }
     }
 }

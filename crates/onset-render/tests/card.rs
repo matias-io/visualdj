@@ -23,6 +23,7 @@ fn move_track() -> TrackMeta {
         artwork_path: None,
         analysis_path: None,
         isrc: None,
+        genre: None,
     }
 }
 

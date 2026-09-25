@@ -3,6 +3,8 @@
 //! followers, RMS, a spectral-flux onset flag, and a running-silence flag.
 
 use onset_core::audio_features::{AudioFeatures, BANDS};
+
+use crate::reactor::{Reaction, Reactor};
 use rustfft::num_complex::Complex32;
 use rustfft::{Fft, FftPlanner};
 use std::collections::VecDeque;
@@ -53,6 +55,7 @@ pub struct Analyzer {
     /// When the most recent block was pushed, and the features it produced.
     last_push: Option<Instant>,
     last: AudioFeatures,
+    reactor: Reactor,
 }
 
 /// Features older than this are reported as silence: the capture stopped delivering blocks
@@ -82,6 +85,7 @@ impl Analyzer {
             silent_run: 0,
             last_push: None,
             last: AudioFeatures::silent(),
+            reactor: Reactor::new(HOP as f32 / sample_rate.max(1) as f32),
         }
     }
 
@@ -151,15 +155,26 @@ impl Analyzer {
         };
 
         let silent = self.silent_run >= SILENT_HOPS;
-        if silent {
+        let reaction = if silent {
             // Stale envelopes must not keep the visuals moving in silence.
             self.band_env = [0.0; BANDS];
-        }
+            self.reactor.reset();
+            Reaction::SILENT
+        } else {
+            self.reactor.update(&self.band_env, &band_raw, rms)
+        };
         let features = AudioFeatures {
             bands: self.band_env,
             rms,
             onset: onset && !silent,
             silent,
+            levels: reaction.levels,
+            groups: reaction.groups,
+            kick: reaction.kick,
+            snare: reaction.snare,
+            hat: reaction.hat,
+            loudness: reaction.loudness,
+            brightness: reaction.brightness,
         };
         self.last = features;
         features

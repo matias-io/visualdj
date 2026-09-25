@@ -42,8 +42,9 @@ impl Library {
         let mut stmt = conn.prepare(
             "SELECT c.ID, c.Title, IFNULL(a.Name, ''), IFNULL(al.Name, ''), c.ReleaseYear,
                     k.ScaleName, c.BPM, c.Length, c.FolderPath, c.ImagePath,
-                    c.AnalysisDataPath, c.ISRC, c.SampleRate
+                    c.AnalysisDataPath, c.ISRC, c.SampleRate, g.Name
              FROM djmdContent c
+             LEFT JOIN djmdGenre g ON g.ID = c.GenreID
              LEFT JOIN djmdArtist a ON a.ID = c.ArtistID
              LEFT JOIN djmdAlbum al ON al.ID = c.AlbumID
              LEFT JOIN djmdKey k ON k.ID = c.KeyID
@@ -75,6 +76,7 @@ impl Library {
                     .map(|i| paths.resolve_share(&i)),
                 analysis_path: r.get::<_, Option<String>>(10)?.filter(|p| !p.is_empty()),
                 isrc: r.get::<_, Option<String>>(11)?.filter(|s| !s.is_empty()),
+                genre: r.get::<_, Option<String>>(13)?.filter(|s| !s.trim().is_empty()),
             })
         })?;
         let tracks: Vec<TrackMeta> = rows.collect::<Result<_, _>>()?;

@@ -26,6 +26,9 @@ pub struct TrackMeta {
     /// rekordbox-relative path of the `.DAT` analysis file, e.g. `/PIONEER/USBANLZ/…/ANLZ0000.DAT`.
     pub analysis_path: Option<String>,
     pub isrc: Option<String>,
+    /// rekordbox's genre tag, when set.
+    #[serde(default)]
+    pub genre: Option<String>,
 }
 
 /// A memory cue or hot cue.

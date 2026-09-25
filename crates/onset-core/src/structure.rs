@@ -27,6 +27,8 @@ pub struct StructureState {
     pub drop_countdown_beats: Option<u32>,
     /// The next cue ahead of the playhead and the seconds until it.
     pub next_cue: Option<(HotCue, f32)>,
+    /// rekordbox's mood analysis for the whole track, when phrases exist.
+    pub mood: Option<crate::phrase::Mood>,
 }
 
 pub struct Structure<'a> {
@@ -70,6 +72,9 @@ impl<'a> Structure<'a> {
                 }
                 st.drop_countdown_beats = pm.beats_until_drop(beat1);
             }
+        }
+        if let Some(pm) = self.phrases {
+            st.mood = Some(pm.mood);
         }
 
         st.next_cue = self

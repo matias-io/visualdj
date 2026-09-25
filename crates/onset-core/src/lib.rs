@@ -8,6 +8,7 @@ pub mod director;
 pub mod grid;
 pub mod music_state;
 pub mod phrase;
+pub mod show;
 pub mod structure;
 pub mod track;
 pub mod transport;

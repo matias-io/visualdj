@@ -1,7 +1,7 @@
 //! The one struct the renderer reads every frame. Everything time-critical is derived from
 //! the clock and beat grid; audio features add texture; the director sets intensity.
 use crate::audio_features::AudioFeatures;
-use crate::phrase::PhraseKind;
+use crate::phrase::{Mood, PhraseKind};
 use crate::structure::StructureState;
 use crate::track::TrackMeta;
 
@@ -13,6 +13,15 @@ pub const DEFAULT_THEME: [[f32; 3]; 5] = [
     [1.00, 0.40, 0.20],
     [0.60, 0.20, 0.90],
 ];
+
+/// The next cue ahead of the playhead, as the show director needs it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CueAhead {
+    /// 0 = memory cue, 1..=8 = hot cue A..H.
+    pub slot: u8,
+    pub seconds: f32,
+    pub color: Option<[u8; 3]>,
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct MusicState {
@@ -35,6 +44,10 @@ pub struct MusicState {
     pub intensity: f32,
     pub audio: AudioFeatures,
     pub track: Option<TrackMeta>,
+    /// Beat number in the grid (0-based), for sequencing; `None` before the first beat.
+    pub beat_index: Option<u32>,
+    pub mood: Option<Mood>,
+    pub next_cue: Option<CueAhead>,
     /// Background, text, accent 1..3 as linear RGB.
     pub theme: [[f32; 3]; 5],
 }
@@ -57,6 +70,9 @@ impl Default for MusicState {
             intensity: 0.5,
             audio: AudioFeatures::silent(),
             track: None,
+            beat_index: None,
+            mood: None,
+            next_cue: None,
             theme: DEFAULT_THEME,
         }
     }
@@ -91,6 +107,13 @@ impl MusicState {
             intensity,
             audio,
             track,
+            beat_index: st.beat_index,
+            mood: st.mood,
+            next_cue: st.next_cue.as_ref().map(|(c, s)| CueAhead {
+                slot: c.slot,
+                seconds: *s,
+                color: c.color,
+            }),
             theme: DEFAULT_THEME,
         }
     }
@@ -118,6 +141,7 @@ mod tests {
             in_high_energy: true,
             drop_countdown_beats: Some(8),
             next_cue: None,
+            mood: None,
         };
         let mut audio = AudioFeatures::silent();
         audio.rms = 0.3;
