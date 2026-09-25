@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use onset_audio::analyzer::Analyzer;
-use onset_audio::capture::{LoopbackCapture, list_output_endpoints};
+use onset_audio::capture::{LoopbackCapture, list_endpoints};
 use onset_core::audio_features::AudioFeatures;
 use onset_core::clock::Clock;
 use onset_core::director::Director;
@@ -139,7 +139,7 @@ pub fn sim(
 }
 
 pub fn devices() {
-    for name in list_output_endpoints() {
+    for name in list_endpoints() {
         println!("{name}");
     }
 }

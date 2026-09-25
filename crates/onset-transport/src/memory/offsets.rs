@@ -31,6 +31,38 @@ pub struct DeckChains {
     pub anlz_path: Option<Chain>,
 }
 
+/// A module pointer a deck object carries at a fixed distance from its position field:
+/// a vtable or static the player struct references. Several of these identify the struct
+/// wherever the allocator put it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Anchor {
+    /// Signed distance from the position field to the pointer.
+    pub offset: i64,
+    /// What the pointer holds, relative to the module base.
+    pub module_offset: u64,
+}
+
+/// A flag byte inside the deck object, relative to the position field.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FlagField {
+    pub offset: i64,
+    /// Bits that are set when the flag holds.
+    pub mask: u8,
+}
+
+/// Finds the deck objects by scanning memory for their anchors instead of following static
+/// chains, which change with every allocation order. Decks are numbered by address.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeckSignature {
+    /// The first anchor is the one scanned for; the rest confirm a hit.
+    pub anchors: Vec<Anchor>,
+    /// Objects beyond this many are ignored (rekordbox keeps players for every deck).
+    pub max_decks: usize,
+    /// Set on the deck that is MASTER, when known.
+    #[serde(default)]
+    pub master_flag: Option<FlagField>,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Offsets {
     pub rekordbox_version: String,
@@ -43,7 +75,11 @@ pub struct Offsets {
     /// the reader follows whichever deck is playing.
     #[serde(default)]
     pub master_deck: Option<Chain>,
+    /// Per-deck static chains; may be empty when a `signature` finds the decks instead.
+    #[serde(default)]
     pub decks: Vec<DeckChains>,
+    #[serde(default)]
+    pub signature: Option<DeckSignature>,
     /// Where these chains came from (calibrator run, imported file, hand-derived).
     pub provenance: Option<String>,
 }
@@ -136,6 +172,7 @@ impl Offsets {
                 position_rate_hz: 44_100.0,
                 master_deck: Some(master),
                 decks,
+                signature: None,
                 provenance: Some("imported from rkbx_link offsets text".to_string()),
             });
         }

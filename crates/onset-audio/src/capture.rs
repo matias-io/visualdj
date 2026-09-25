@@ -1,4 +1,7 @@
-//! Captures the mix that rekordbox's PC MASTER OUT sends to a Windows output endpoint.
+//! Captures the mix: either the recording input a DJ controller sends back over USB (a
+//! DDJ-FLX10 on ASIO bypasses Windows' outputs entirely, but its "Microphone" endpoint
+//! carries the mixer's REC/master signal), or a WASAPI loopback of the output endpoint that
+//! rekordbox's PC MASTER OUT plays to.
 //!
 //! There is no dedicated loopback API in cpal: on Windows, calling
 //! [`DeviceTrait::build_input_stream`] on an *output* device opens a WASAPI loopback capture of
@@ -16,15 +19,42 @@ const BLOCK_FRAMES: usize = 256;
 /// Capacity of the capture channel, in blocks.
 const CHANNEL_CAPACITY: usize = 256;
 
-/// Names of every output device on the default host: the endpoints selectable for loopback
-/// capture. Returns an empty vector (rather than erroring) when the host or its device list is
-/// unavailable, since this is primarily used to populate a picker.
+/// Names of every capture endpoint (recording inputs first, then output endpoints for
+/// loopback). Returns an empty vector (rather than erroring) when the host or its device list
+/// is unavailable, since this is primarily used to populate a picker.
+#[must_use]
+pub fn list_endpoints() -> Vec<String> {
+    let host = cpal::default_host();
+    let inputs = host
+        .input_devices()
+        .map(|devices| devices.map(|device| device.to_string()).collect::<Vec<_>>())
+        .unwrap_or_default();
+    let outputs = host
+        .output_devices()
+        .map(|devices| devices.map(|device| device.to_string()).collect::<Vec<_>>())
+        .unwrap_or_default();
+    inputs.into_iter().chain(outputs).collect()
+}
+
+/// Kept for callers that only want loopback-capable endpoints.
 #[must_use]
 pub fn list_output_endpoints() -> Vec<String> {
     let host = cpal::default_host();
     host.output_devices()
         .map(|devices| devices.map(|device| device.to_string()).collect())
         .unwrap_or_default()
+}
+
+/// Name fragments of DJ gear whose USB recording input carries the master mix. Preferred
+/// over loopback when present and nothing else was asked for, since a controller on ASIO
+/// never plays through a Windows output endpoint.
+const DJ_GEAR: &[&str] = &["DDJ", "XDJ", "DJM", "OPUS", "RANE", "DENON", "TRAKTOR"];
+
+/// True when the endpoint name looks like a DJ controller or mixer.
+#[must_use]
+pub fn looks_like_dj_gear(name: &str) -> bool {
+    let upper = name.to_uppercase();
+    DJ_GEAR.iter().any(|g| upper.contains(g))
 }
 
 /// A live WASAPI loopback capture. Keep this alive for as long as capture should continue;
@@ -49,11 +79,22 @@ impl LoopbackCapture {
     /// stream fails to build or start.
     pub fn start(endpoint_name: Option<&str>) -> Result<(Self, Receiver<Vec<f32>>, u32)> {
         let host = cpal::default_host();
-        let device = select_output_device(&host, endpoint_name)
-            .context("no output device available for loopback capture")?;
-        let config = device
-            .default_output_config()
-            .context("failed to read the output device's default config")?;
+        let (device, is_input) =
+            select_device(&host, endpoint_name).context("no audio device available to capture")?;
+        tracing::info!(
+            device = %device,
+            kind = if is_input { "recording input" } else { "output loopback" },
+            "audio capture"
+        );
+        let config = if is_input {
+            device
+                .default_input_config()
+                .context("failed to read the input device's default config")?
+        } else {
+            device
+                .default_output_config()
+                .context("failed to read the output device's default config")?
+        };
         let sample_rate = config.sample_rate();
         let channels = usize::from(config.channels());
         let sample_format = config.sample_format();
@@ -69,19 +110,30 @@ impl LoopbackCapture {
     }
 }
 
-/// Picks the output device whose name contains `endpoint_name` (case-insensitive), or the
-/// default output device when no name is given or nothing matches.
-fn select_output_device(host: &Host, endpoint_name: Option<&str>) -> Option<Device> {
+/// Picks the device to capture and whether it is a recording input: the one whose name
+/// contains `endpoint_name` (inputs first, then outputs for loopback); without a name, the
+/// first DJ-gear recording input, else the default output for loopback.
+fn select_device(host: &Host, endpoint_name: Option<&str>) -> Option<(Device, bool)> {
+    let inputs: Vec<Device> = host.input_devices().map(Iterator::collect).unwrap_or_default();
     if let Some(name) = endpoint_name {
         let needle = name.to_lowercase();
+        if let Some(d) = inputs
+            .into_iter()
+            .find(|d| d.to_string().to_lowercase().contains(&needle))
+        {
+            return Some((d, true));
+        }
         let matched = host.output_devices().ok().and_then(|mut devices| {
             devices.find(|d| d.to_string().to_lowercase().contains(&needle))
         });
-        if matched.is_some() {
-            return matched;
+        if let Some(d) = matched {
+            return Some((d, false));
         }
+        tracing::warn!(name, "no audio endpoint matches; using the default route");
+    } else if let Some(d) = inputs.into_iter().find(|d| looks_like_dj_gear(&d.to_string())) {
+        return Some((d, true));
     }
-    host.default_output_device()
+    host.default_output_device().map(|d| (d, false))
 }
 
 /// Builds the input (loopback) stream for whichever sample format the device reports, converting

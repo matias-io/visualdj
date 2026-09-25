@@ -16,6 +16,9 @@ pub enum TrackRef {
         artist: String,
         album: String,
     },
+    /// The audio file's path as the library stores it (rekordbox keeps it open while the
+    /// track is loaded).
+    FilePath(std::path::PathBuf),
 }
 
 #[derive(Debug, Clone, PartialEq)]

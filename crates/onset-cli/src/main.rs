@@ -240,10 +240,10 @@ fn main() -> anyhow::Result<()> {
             out_dir,
             step_seconds,
         } => {
-            let mode = calibrate::Mode {
-                step_limit: std::time::Duration::from_secs(step_seconds),
-            };
-            calibrate::calibrate(&out_dir.unwrap_or_else(calibrate::default_out_dir), &mode)?;
+            calibrate::calibrate(
+                &out_dir.unwrap_or_else(calibrate::default_out_dir),
+                step_seconds,
+            )?;
         }
         #[cfg(not(windows))]
         Command::Calibrate { .. } => anyhow::bail!("calibrate needs Windows"),

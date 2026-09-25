@@ -107,6 +107,16 @@ impl Library {
         self.by_analysis.get(&norm(rel)).map(|&i| &self.tracks[i])
     }
 
+    /// The track whose file is `path`, tolerant of case and separators.
+    pub fn by_file_path(&self, path: &std::path::Path) -> Option<&TrackMeta> {
+        let wanted = norm(&path.to_string_lossy());
+        self.tracks.iter().find(|t| {
+            t.file_path
+                .as_ref()
+                .is_some_and(|p| norm(&p.to_string_lossy()) == wanted)
+        })
+    }
+
     /// Case-insensitive title match; `artist` may be a prefix of the stored artist string
     /// (rekordbox concatenates collaborators, and memory reads may truncate).
     pub fn find_by_title_artist(&self, title: &str, artist: &str) -> Option<&TrackMeta> {

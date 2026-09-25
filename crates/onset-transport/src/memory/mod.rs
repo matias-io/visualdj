@@ -1,6 +1,7 @@
 //! Reading rekordbox's live state from its process memory (Windows only). `process` opens
 //! and reads; `chain` describes pointer paths; `offsets` stores them per version; `scan`
-//! discovers them; `reader` turns calibrated chains into `TransportSnapshot`s.
+//! discovers them; `calibrator` runs the guided session that derives them; `reader` turns
+//! calibrated chains into `TransportSnapshot`s.
 //!
 //! Nothing here writes to the process.
 #[cfg(windows)]
@@ -13,6 +14,12 @@ pub mod reader;
 
 #[cfg(windows)]
 pub mod scan;
+
+#[cfg(windows)]
+pub mod calibrator;
+
+#[cfg(windows)]
+pub mod handles;
 
 /// The executable this reader targets.
 pub const REKORDBOX_EXE: &str = "rekordbox.exe";

@@ -4,9 +4,14 @@ use std::time::{Duration, Instant};
 
 use onset_core::transport::TrackRef;
 use onset_transport::memory::chain::Chain;
-use onset_transport::memory::offsets::{DeckChains, Offsets, PositionFormat};
+use std::path::{Path, PathBuf};
+
+use onset_transport::memory::offsets::{
+    Anchor, DeckChains, DeckSignature, FlagField, Offsets, PositionFormat,
+};
 use onset_transport::memory::reader::{
-    ChainReader, DeckChooser, FakeMem, PlayTracker, parse_track_info,
+    ChainReader, DeckChooser, DeckFiles, FakeMem, PlayTracker, decks_from_hits,
+    parse_track_info, signature_matches,
 };
 
 const BASE: u64 = 0x1000_0000;
@@ -50,6 +55,7 @@ fn fake_rekordbox() -> (FakeMem, Offsets) {
         position_format: PositionFormat::I64,
         position_rate_hz: 44_100.0,
         master_deck: Some(chain(0x110, &[0x0, 0x0])),
+        signature: None,
         decks: vec![
             DeckChains {
                 bpm: Some(chain(0x100, &[0x0, 0x20])),
@@ -251,4 +257,127 @@ fn deck_chooser_falls_back_to_a_loaded_deck() {
     let mut chooser = DeckChooser::default();
     assert_eq!(chooser.choose(None, &[None, Some(false)]), Some(1));
     assert_eq!(chooser.choose(None, &[None, None]), None);
+}
+
+/// Two deck objects laid out the way rekordbox 7.2 does: module pointers at fixed
+/// distances below the position field, the objects anywhere in memory.
+fn signature_rekordbox() -> (FakeMem, DeckSignature) {
+    let mut mem = FakeMem::new(BASE);
+    let sig = DeckSignature {
+        anchors: vec![
+            Anchor { offset: -0x20, module_offset: 0x1046 },
+            Anchor { offset: -0x50, module_offset: 0xeee3 },
+        ],
+        max_decks: 4,
+        master_flag: Some(FlagField {
+            offset: -0x328,
+            mask: 0x80,
+        }),
+    };
+    for (pos, samples) in [(0x9000u64, 44_100i32), (0x7000, 88_200)] {
+        mem.put_u64(pos - 0x20, BASE + 0x1046);
+        mem.put_u64(pos - 0x50, BASE + 0xeee3);
+        mem.put_bytes(pos, &samples.to_le_bytes());
+    }
+    // Deck at 0x9000 (the second by address) is MASTER: bit 7 set, other bits noise.
+    mem.put_bytes(0x9000 - 0x328, &[0xc1]);
+    mem.put_bytes(0x7000 - 0x328, &[0x41]);
+    // A stray copy of the first anchor with nothing else around it: not a deck.
+    mem.put_u64(0x5000 - 0x20, BASE + 0x1046);
+    (mem, sig)
+}
+
+#[test]
+fn signature_confirms_every_anchor() {
+    let (mem, sig) = signature_rekordbox();
+    assert!(signature_matches(&mem, &sig, 0x9000));
+    assert!(!signature_matches(&mem, &sig, 0x5000), "one anchor is not enough");
+    assert!(!signature_matches(&mem, &sig, 0x9008));
+}
+
+#[test]
+fn decks_come_from_hits_in_address_order() {
+    let (mem, sig) = signature_rekordbox();
+    // Hits are where the first anchor's bytes were seen, in scan order.
+    let hits = [0x9000 - 0x20, 0x5000 - 0x20, 0x7000 - 0x20, 0x9000 - 0x20];
+    assert_eq!(decks_from_hits(&mem, &sig, &hits), vec![0x7000, 0x9000]);
+}
+
+#[test]
+fn reader_reads_signature_decks_without_chains() {
+    let (mem, sig) = signature_rekordbox();
+    let offsets = Offsets {
+        rekordbox_version: "7.2.18".into(),
+        platform: "windows".into(),
+        position_format: PositionFormat::I32,
+        position_rate_hz: 44_100.0,
+        master_deck: None,
+        decks: Vec::new(),
+        signature: Some(sig),
+        provenance: None,
+    };
+    let text = offsets.to_toml().unwrap();
+    assert!(text.contains("[signature]"), "{text}");
+    assert_eq!(Offsets::from_toml(&text).unwrap(), offsets);
+    let mut reader = ChainReader::new(mem, offsets);
+    assert_eq!(reader.deck_count(), 0);
+    assert_eq!(reader.adopt_hits(&[0x9000 - 0x20, 0x7000 - 0x20]), 2);
+    assert_eq!(reader.deck_count(), 2);
+    let a = reader.deck(0).expect("deck 1");
+    assert!((a.position_s - 2.0).abs() < 1e-9, "{}", a.position_s);
+    let b = reader.deck(1).expect("deck 2");
+    assert!((b.position_s - 1.0).abs() < 1e-9);
+    assert!(!reader.found_decks_stale());
+    assert_eq!(reader.master_deck(), Some(1), "the flag byte names the master");
+}
+
+fn p(s: &str) -> PathBuf {
+    PathBuf::from(s)
+}
+
+#[test]
+fn deck_files_pairs_a_new_file_with_the_free_deck() {
+    let mut files = DeckFiles::default();
+    let none = |_: &Path| None;
+    let a = files.update(&[p("a.flac")], &[Some(10.0), Some(0.0)], &none).to_vec();
+    assert_eq!(a, vec![Some(p("a.flac")), None]);
+    // A second file while deck 1 keeps its track: only deck 2 is free.
+    let b = files
+        .update(&[p("a.flac"), p("b.flac")], &[Some(12.0), Some(0.0)], &none)
+        .to_vec();
+    assert_eq!(b, vec![Some(p("a.flac")), Some(p("b.flac"))]);
+    // Deck 1's file closes (a new track is being loaded there) and c.flac appears.
+    let c = files
+        .update(&[p("b.flac"), p("c.flac")], &[Some(0.0), Some(40.0)], &none)
+        .to_vec();
+    assert_eq!(c, vec![Some(p("c.flac")), Some(p("b.flac"))]);
+}
+
+#[test]
+fn deck_files_uses_lengths_when_both_decks_are_free() {
+    let mut files = DeckFiles::default();
+    let duration = |path: &Path| match path.to_str() {
+        Some("short.flac") => Some(60.0),
+        Some("long.flac") => Some(300.0),
+        _ => None,
+    };
+    // Startup with two tracks loaded: deck 1 sits at 150 s, which only the long file allows.
+    let got = files
+        .update(
+            &[p("short.flac"), p("long.flac")],
+            &[Some(150.0), Some(20.0)],
+            &duration,
+        )
+        .to_vec();
+    assert_eq!(got, vec![Some(p("long.flac")), Some(p("short.flac"))]);
+}
+
+#[test]
+fn deck_files_waits_when_it_cannot_tell() {
+    let mut files = DeckFiles::default();
+    let none = |_: &Path| None;
+    let got = files
+        .update(&[p("a.flac"), p("b.flac")], &[Some(5.0), Some(5.0)], &none)
+        .to_vec();
+    assert_eq!(got, vec![None, None], "no guessing");
 }

@@ -25,4 +25,8 @@ pub trait TransportSource: Send {
     /// The analysed tempo of the track the engine believes is loaded, for sources without
     /// a readable tempo field. Default: ignored.
     fn set_track_bpm(&mut self, _bpm: Option<f32>) {}
+
+    /// Lengths of the library's files in seconds, for sources that learn which files are
+    /// loaded but have to work out which deck holds which. Default: ignored.
+    fn set_file_durations(&mut self, _table: Vec<(std::path::PathBuf, f64)>) {}
 }

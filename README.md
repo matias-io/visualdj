@@ -113,22 +113,31 @@ ships calibrated (`offsets.2.18.toml`). For another version the HUD says
 Calibrate with rekordbox open in Performance mode and the decks to yourself:
 
 ```bash
-targetelease\onset-cli.exe calibrate
+target
+elease\onset-cli.exe calibrate
 ```
 
 It announces each step and watches rekordbox's memory until it sees you do it, so there is
-nothing to type. The steps: play a track on deck 1 as MASTER; pause it; play it again;
-load a different track on deck 1 and play it; stop deck 1 and wait a moment; load a track on
-deck 2 and play it; pause it; play it again; press MASTER on deck 2; press MASTER on deck 1.
-Each pause-and-play tells the calibrator which counters are the real playhead (the ones that
-stop and resume) rather than clocks that keep running. The whole run takes ten to fifteen
-minutes, most of it scanning. A step that is not seen within `--step-seconds` (default 180)
-is skipped and the later checks decide whether the result holds.
+nothing to type: play a track on any deck, pause it, play it again. The pause tells the
+calibrator which counter is the real playhead (it stops and resumes) rather than a clock
+that keeps running; it then records the pointers the player object carries around that
+field. At runtime Onset scans for that description, so it finds every deck wherever
+rekordbox allocated it, on every launch. The whole run takes about two minutes. The
+launcher runs the same session from its Calibration section.
 
-Then start Onset normally. Nothing is written to rekordbox; the reader opens the process
-with read-only access. Without a master-deck chain (7.2.18 has none yet) the show follows
-the deck that is playing, and during a transition it stays on the outgoing deck until that
-deck stops.
+Onset reads rekordbox's live state as follows, none of it written back:
+
+- deck positions from rekordbox's process memory (read-only access);
+- the loaded tracks from the audio files rekordbox keeps open while a track is loaded,
+  matched to the library by path, so title, artwork, beat grid, phrases and cues come from
+  the collection;
+- the mix from the DJ controller's USB recording input when one is connected (a DDJ-FLX10
+  on ASIO never plays through a Windows output), otherwise a WASAPI loopback of the output
+  rekordbox plays to.
+
+rekordbox does not expose which deck is MASTER in a way Onset can read yet, so the show
+follows the deck that is playing; during a transition it stays on the outgoing deck until
+that deck stops.
 
 ## Writing a scene
 

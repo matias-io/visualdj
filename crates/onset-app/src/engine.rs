@@ -171,6 +171,7 @@ pub fn resolve_track(library: &Library, r: &TrackRef) -> Option<TrackMeta> {
             .find_by_title_artist(title, artist)
             .or_else(|| library.find_by_title_artist(title, ""))
             .cloned(),
+        TrackRef::FilePath(path) => library.by_file_path(path).cloned(),
     }
 }
 
@@ -249,12 +250,19 @@ impl Engine {
             .collect();
         tracks.sort_by_key(|t| t.label.to_lowercase());
 
-        let (source, current) = match &cfg.sim_track {
-            Some(title) => {
-                let (sim, current) = start_sim(&library, &paths, title, &cfg)?;
-                (Source::Sim(Box::new(sim)), Some(current))
-            }
-            None => (Source::Live(live_source(&cfg)), None),
+        let (source, current) = if let Some(title) = &cfg.sim_track {
+            let (sim, current) = start_sim(&library, &paths, title, &cfg)?;
+            (Source::Sim(Box::new(sim)), Some(current))
+        } else {
+            let mut live = live_source(&cfg);
+            live.set_file_durations(
+                library
+                    .tracks()
+                    .iter()
+                    .filter_map(|t| Some((t.file_path.clone()?, f64::from(t.duration_s?))))
+                    .collect(),
+            );
+            (Source::Live(live), None)
         };
         let simulator = matches!(source, Source::Sim(_));
         let capture = if cfg.capture_audio && !simulator {
@@ -289,6 +297,7 @@ impl Engine {
                     started: Instant::now(),
                     last_tick: Instant::now(),
                     last_status: None,
+                    unresolved: None,
                 };
                 engine.run(&rx, &state_w, &status_w);
             })?;
@@ -363,6 +372,8 @@ struct Running {
     started: Instant,
     last_tick: Instant,
     last_status: Option<EngineStatus>,
+    /// The last track reference the library could not resolve, so it is reported once.
+    unresolved: Option<TrackRef>,
 }
 
 impl Running {
@@ -444,7 +455,10 @@ impl Running {
             self.clock = Clock::new();
             return;
         }
-        tracing::warn!(track = ?snapshot.track, "master deck track not in the library");
+        if self.unresolved.as_ref() != Some(&snapshot.track) {
+            tracing::warn!(track = ?snapshot.track, "master deck track not in the library");
+            self.unresolved = Some(snapshot.track.clone());
+        }
         if self.current.is_some() {
             self.current = None;
             self.clock = Clock::new();
