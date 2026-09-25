@@ -66,6 +66,8 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         col = col + lamp_col * brightness * 0.004 / (dot(uv - o, uv - o) + 0.0006);
     }
     col = col * haze;
+    // A warm centre spot follows the vocals.
+    col = col + palette(0.3 + seed()) * vocal() * 0.25 * exp(-dot(uv - vec2<f32>(0.0, 0.2), uv - vec2<f32>(0.0, 0.2)) * 2.5);
 
     // Truss bar along the top.
     col = col + vec3<f32>(0.04) * smoothstep(0.012, 0.0, abs(uv.y - 1.08));

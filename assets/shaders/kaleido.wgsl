@@ -45,7 +45,7 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     col = col + palette(0.2 + seed()) * kick() * exp(-abs(r - kr) * 22.0) * 2.0;
 
     // Hot centre.
-    col = col + palette(0.1) * (0.03 + 0.2 * sub()) / (r * r * 10.0 + 0.08);
+    col = col + palette(0.1) * (0.03 + 0.2 * sub() + 0.15 * vocal()) / (r * r * 10.0 + 0.08);
 
     // Endless zoom: the last frame pulled towards the centre, fading.
     let prev_uv = (in.uv - vec2<f32>(0.5)) * (0.975 - 0.015 * bass()) + vec2<f32>(0.5);

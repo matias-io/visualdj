@@ -69,7 +69,8 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
             let depth = dist / (f32(steps) * step_len);
             let tint = mix(palette(depth * 0.6 + seed()), palette(depth * 0.6 + seed() + 0.45), d);
             // Glow from within the gas: bass, a kick pulse ring and the drop.
-            let inner = 0.6 + 1.6 * bass() * d + 2.5 * drop_hit() * d
+            // Vocals warm the cores from within, so a singer lights the gas.
+            let inner = 0.6 + 1.6 * bass() * d + 2.5 * drop_hit() * d + 1.2 * vocal() * d
                 + 1.8 * kick() * exp(-abs(dist - pulse_r) * 1.5);
             // Dense cores burn hot; thin edges stay dim.
             let emit = tint * pow(d, 2.0) * inner * 1.1;

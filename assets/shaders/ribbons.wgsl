@@ -55,7 +55,8 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         col = col + palette(far_fi / far_glow * 0.6 + x * 0.05 + seed() + t * 0.02) * far_glow;
     }
     // A haze of colour behind the sheet, rising with the mids.
-    let haze = palette(0.5 + seed()) * (0.04 + 0.1 * mid()) * smoothstep(-0.6, 0.8, uv.y);
+    // Vocals add a soft glow over the sheet, like a spotlight on the singer.
+    let haze = palette(0.5 + seed()) * (0.04 + 0.1 * mid() + 0.12 * vocal()) * smoothstep(-0.6, 0.8, uv.y);
     col = col + haze * (1.0 - darkness() * 0.6);
     return vec4<f32>(col, 1.0);
 }

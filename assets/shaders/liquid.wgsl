@@ -46,7 +46,7 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     let rz = -r.y * sin(tilt) + r.z * cos(tilt);
     let env = environment(normalize(vec3<f32>(r.x, ry, rz)));
     let fres = 0.25 + 0.75 * pow(1.0 - max(dot(-view, n), 0.0), 4.0);
-    var col = env * fres * (0.7 + 0.6 * loudness());
+    var col = env * fres * (0.7 + 0.6 * loudness() + 0.3 * vocal());
     // Liquid depth: darker in the troughs, tinted.
     col = col + palette(0.15 + seed()) * 0.02 * smoothstep(0.7, 0.2, h);
     col = col * (1.0 - 0.35 * darkness() * (1.0 - frame.intensity));

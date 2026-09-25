@@ -6,7 +6,7 @@ use crate::gpu::Gpu;
 use crate::scene::{FullscreenScene, Scene, ShaderError};
 
 /// File stems under `assets/shaders/`, in menu order.
-pub const BUILTIN_SCENE_NAMES: &[&str] = &["tunnel", "synthwave", "ribbons", "kaleido", "lasers", "nebula", "crystal", "liquid", "cover", "pulse", "ring", "warp", "voronoi"];
+pub const BUILTIN_SCENE_NAMES: &[&str] = &["tunnel", "synthwave", "ribbons", "kaleido", "lasers", "nebula", "zerog", "crystal", "liquid", "cover", "pulse", "ring", "warp", "voronoi"];
 
 /// What a scene is, for the launcher and Auto mode.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -81,9 +81,18 @@ pub const SCENES: &[SceneInfo] = &[
         auto: true,
     },
     SceneInfo {
+        name: "zerog",
+        title: "Zero Gravity",
+        blurb: "Tumbling debris drifting in deep space. Bass breathes the field outward, the build-up draws it in, the drop throws it apart.",
+        energy: 0.35,
+        darkness: 0.85,
+        cost: 2,
+        auto: true,
+    },
+    SceneInfo {
         name: "crystal",
         title: "Crystal",
-        blurb: "A ray-marched fractal crystal that folds with the mids and flares on hits. Heavy.",
+        blurb: "Flying through a lattice of glassy neon crystals, each lit by its own slice of the spectrum.",
         energy: 0.75,
         darkness: 0.5,
         cost: 3,
@@ -176,6 +185,10 @@ pub const EMBEDDED_SCENES: &[(&str, &str)] = &[
     (
         "nebula",
         include_str!("../../../../assets/shaders/nebula.wgsl"),
+    ),
+    (
+        "zerog",
+        include_str!("../../../../assets/shaders/zerog.wgsl"),
     ),
     (
         "crystal",
