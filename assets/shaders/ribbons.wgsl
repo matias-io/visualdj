@@ -25,6 +25,9 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     let cam_y = 0.9 - 0.25 * drop_hit();
     let lines = i32(28.0 + 14.0 * quality());
     var col = vec3<f32>(0.0);
+    // Far lines only add their soft halo; it is tinted once, after the loop.
+    var far_glow = 0.0;
+    var far_fi = 0.0;
     for (var i = 0; i < lines; i = i + 1) {
         let fi = f32(i) / f32(lines);
         let z = 0.9 + fi * 3.2;
@@ -32,15 +35,24 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         let h = surface(x, z, t);
         let y = (h - cam_y) * focal / z + 0.35;
         let d = abs(uv.y - y);
+        let depth_fade = 1.0 - fi * 0.75;
+        let halo = 0.0009 / (d * d + 0.0009) * 0.06;
+        if (d > 0.06) {
+            far_glow = far_glow + halo * depth_fade;
+            far_fi = far_fi + halo * depth_fade * fi;
+            continue;
+        }
         let width = 0.0035 / z + 0.0008;
         let core = exp(-(d * d) / (width * width));
-        let halo = 0.0009 / (d * d + 0.0009) * 0.06;
         // Colour runs across the sheet and back to front; highs sparkle along the lines.
         let tint = palette(fi * 0.6 + x * 0.05 + seed() + t * 0.02);
         let sparkle = 1.0 + 2.0 * snare() * noise2(vec2<f32>(x * 12.0, fi * 30.0 + t * 4.0))
             + 1.5 * treble() * step(0.8, noise2(vec2<f32>(x * 30.0 - t * 6.0, fi * 50.0)));
-        let depth_fade = 1.0 - fi * 0.75;
         col = col + tint * (core * 1.4 + halo) * sparkle * depth_fade;
+    }
+    if (far_glow > 0.0) {
+        let x = uv.x * 2.0 / focal;
+        col = col + palette(far_fi / far_glow * 0.6 + x * 0.05 + seed() + t * 0.02) * far_glow;
     }
     // A haze of colour behind the sheet, rising with the mids.
     let haze = palette(0.5 + seed()) * (0.04 + 0.1 * mid()) * smoothstep(-0.6, 0.8, uv.y);
