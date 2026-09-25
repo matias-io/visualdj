@@ -7,6 +7,8 @@ pub enum SourceStatus {
     Connected,
     /// Waiting for its target (rekordbox not running, no OSC yet).
     Searching,
+    /// Attached to the target and still locating what it reads (the rekordbox decks).
+    Scanning,
     /// The target exists but this source cannot read it (e.g. no offsets for this version).
     Unsupported(String),
     Error(String),

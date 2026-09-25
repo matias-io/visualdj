@@ -747,7 +747,80 @@ mod live {
             files_rx: mpsc::Receiver<Vec<PathBuf>>,
             open_files: Vec<PathBuf>,
             deck_files: DeckFiles,
+            /// A deck scan running on its own thread; a heap pass takes seconds.
+            scan: Option<mpsc::Receiver<DeckScan>>,
         },
+    }
+
+    /// What a background deck scan found: the position fields, and the anchors when a
+    /// runtime repair replaced them.
+    struct DeckScan {
+        found: Vec<u64>,
+        anchors: Option<Vec<crate::memory::offsets::Anchor>>,
+    }
+
+    /// Applies a finished background deck scan, and starts one when there are no decks or
+    /// the found ones went stale (rekordbox rebuilt its players).
+    fn tend_scan(
+        reader: &mut ChainReader<Process>,
+        trackers: &mut Vec<PlayTracker>,
+        last_scan: &mut Instant,
+        stale: bool,
+        scan: &mut Option<mpsc::Receiver<DeckScan>>,
+        now: Instant,
+    ) {
+        match scan.as_ref().map(mpsc::Receiver::try_recv) {
+            Some(Ok(found)) => {
+                if let Some(anchors) = found.anchors {
+                    reader.set_anchors(anchors);
+                }
+                reader.set_found_decks(found.found);
+                trackers.resize(reader.deck_count(), PlayTracker::default());
+                *last_scan = now;
+                *scan = None;
+            }
+            Some(Err(mpsc::TryRecvError::Disconnected)) => {
+                *last_scan = now;
+                *scan = None;
+            }
+            Some(Err(mpsc::TryRecvError::Empty)) | None => {}
+        }
+        if scan.is_none()
+            && (trackers.is_empty() || stale)
+            && now.duration_since(*last_scan) >= RESCAN
+        {
+            tracing::info!(stale, "looking for the decks again");
+            *last_scan = now;
+            *scan = Some(spawn_scan(reader.mem().pid, reader.offsets().clone()));
+        }
+    }
+
+    /// Scans for the decks on a second handle to the same rekordbox process, so polling
+    /// (and the show) carries on meanwhile. Nothing is sent if the process changed.
+    fn spawn_scan(pid: u32, offsets: Offsets) -> mpsc::Receiver<DeckScan> {
+        let (tx, rx) = mpsc::channel();
+        let spawned = std::thread::Builder::new()
+            .name("onset-deck-scan".into())
+            .spawn(move || {
+                let Ok(process) = Process::open(REKORDBOX_EXE) else {
+                    return;
+                };
+                if process.pid != pid {
+                    return;
+                }
+                let before = offsets.signature.as_ref().map(|s| s.anchors.clone());
+                let mut reader = ChainReader::new(process, offsets);
+                discover_decks(&mut reader);
+                let after = reader.signature().map(|s| s.anchors.clone());
+                let _ = tx.send(DeckScan {
+                    found: reader.deck_positions().to_vec(),
+                    anchors: if after == before { None } else { after },
+                });
+            });
+        if let Err(e) = spawned {
+            tracing::warn!(error = %e, "cannot start the deck scan thread");
+        }
+        rx
     }
 
     /// The rekordbox memory transport: finds the process, loads the offsets for its version,
@@ -785,11 +858,11 @@ mod live {
             if let Some(offsets) = Offsets::find_version(&self.offsets_dir, &version) {
                 tracing::info!(pid = process.pid, %version, "rekordbox connected");
                 let pid = process.pid;
-                let mut reader = Box::new(ChainReader::new(process, offsets));
-                let decks = discover_decks(&mut reader);
+                let scan = spawn_scan(pid, offsets.clone());
+                let reader = Box::new(ChainReader::new(process, offsets));
                 self.state = State::Connected {
                     reader,
-                    trackers: vec![PlayTracker::default(); decks],
+                    trackers: Vec::new(),
                     chooser: DeckChooser::default(),
                     failures: 0,
                     last_scan: Instant::now(),
@@ -797,6 +870,7 @@ mod live {
                     files_rx: spawn_file_watcher(pid),
                     open_files: Vec::new(),
                     deck_files: DeckFiles::default(),
+                    scan: Some(scan),
                 };
             } else {
                 tracing::warn!(%version, dir = %self.offsets_dir.display(), "no offsets for this rekordbox version; run the calibrator");
@@ -818,6 +892,11 @@ mod live {
                 State::Searching { .. } => SourceStatus::Searching,
                 State::Unsupported { version, .. } => {
                     SourceStatus::Unsupported(format!("no offsets for rekordbox {version}"))
+                }
+                State::Connected { trackers, scan, .. }
+                    if trackers.is_empty() && scan.is_some() =>
+                {
+                    SourceStatus::Scanning
                 }
                 State::Connected { .. } => SourceStatus::Connected,
             }
@@ -862,6 +941,7 @@ mod live {
                     files_rx,
                     open_files,
                     deck_files,
+                    scan,
                 } => {
                     while let Ok(files) = files_rx.try_recv() {
                         let files: Vec<PathBuf> = files
@@ -880,14 +960,16 @@ mod live {
                     } else {
                         0
                     };
-                    if (trackers.is_empty() || *stale_polls >= STALE_POLLS)
-                        && now.duration_since(*last_scan) >= RESCAN
-                    {
-                        tracing::info!(stale_polls, "looking for the decks again");
-                        *last_scan = now;
+                    tend_scan(
+                        reader,
+                        trackers,
+                        last_scan,
+                        *stale_polls >= STALE_POLLS,
+                        scan,
+                        now,
+                    );
+                    if scan.is_some() && *last_scan == now {
                         *stale_polls = 0;
-                        let decks = discover_decks(reader);
-                        trackers.resize(decks, PlayTracker::default());
                     }
                     let states: Vec<Option<DeckState>> =
                         (0..trackers.len()).map(|i| reader.deck(i)).collect();

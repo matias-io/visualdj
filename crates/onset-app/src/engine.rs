@@ -380,6 +380,9 @@ impl Running {
     fn status_now(&self) -> EngineStatus {
         match (self.source.status(), &self.current) {
             (SourceStatus::Searching, _) => EngineStatus::Waiting("waiting for rekordbox".into()),
+            (SourceStatus::Scanning, _) => {
+                EngineStatus::Waiting("rekordbox found, finding its decks".into())
+            }
             (SourceStatus::Unsupported(why) | SourceStatus::Error(why), _) => {
                 EngineStatus::Waiting(why)
             }
