@@ -1,0 +1,23 @@
+[package]
+name = "onset-lyrics"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "Synced lyrics for Onset: LRCLIB lookup, MusicBrainz ISRC matching and a disk cache"
+
+[dependencies]
+onset-core.workspace = true
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+ureq.workspace = true
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

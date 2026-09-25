@@ -159,6 +159,8 @@ pub struct Renderer {
     show_hud: bool,
     /// One line about the current track's lyrics, for the launcher.
     lyrics_status: String,
+    lyrics: crate::lyrics::LyricsLayer,
+    lyrics_options: crate::overlay_options::LyricsOptions,
     /// When a launcher build-up preview started (renderer clock), while it runs.
     build_preview: Option<f32>,
     hud_options: crate::overlay_options::HudOptions,
@@ -210,6 +212,8 @@ impl Renderer {
             show_card: true,
             build_preview: None,
             lyrics_status: String::new(),
+            lyrics: crate::lyrics::LyricsLayer::new(),
+            lyrics_options: crate::overlay_options::LyricsOptions::default(),
             hud_options: crate::overlay_options::HudOptions::default(),
             card_options: crate::overlay_options::CardOptions::default(),
             show_hud: false,
@@ -279,6 +283,22 @@ impl Renderer {
     /// One line about the current track's lyrics.
     pub fn lyrics_status(&self) -> &str {
         &self.lyrics_status
+    }
+
+    /// The lyrics for `track` (none for an instrumental or a miss) and the launcher's line
+    /// about them.
+    pub fn set_lyrics(
+        &mut self,
+        track: onset_core::track::TrackId,
+        lyrics: Option<std::sync::Arc<onset_core::lyrics::Lyrics>>,
+        status: String,
+    ) {
+        self.lyrics.set(track, lyrics);
+        self.lyrics_status = status;
+    }
+
+    pub fn set_lyrics_options(&mut self, options: crate::overlay_options::LyricsOptions) {
+        self.lyrics_options = options;
     }
 
     /// Plays a four-second build-up on the preview, ending in a drop.
@@ -754,7 +774,17 @@ impl Renderer {
 
         // Overlays grow a little on emphasis (track change, drop).
         let grow = 1.0 + 0.12 * fx.emphasis;
-        let mut items: Vec<TextItem> = Vec::new();
+        let mut items: Vec<TextItem> = self.lyrics.items(
+            &mut self.text,
+            &crate::lyrics::LyricsFrame {
+                size: self.size,
+                ms,
+                fx: &fx,
+                theme: &self.palette_now,
+                options: &self.lyrics_options,
+                time_s,
+            },
+        );
         self.card
             .update(gpu, ms.track.as_ref().filter(|_| self.show_card), time_s);
         if self.show_card {

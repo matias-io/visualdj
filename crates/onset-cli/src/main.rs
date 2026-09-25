@@ -131,6 +131,17 @@ enum Command {
         #[arg(long, default_value_t = 0x10000)]
         window: usize,
     },
+    /// Look up synced lyrics for the collection (LRCLIB, MusicBrainz) and cache them
+    Lyrics {
+        #[arg(long)]
+        app_dir: Option<PathBuf>,
+        /// Only tracks whose artist or title contains this
+        #[arg(long)]
+        grep: Option<String>,
+        /// Report what is cached without going online
+        #[arg(long)]
+        offline: bool,
+    },
     /// Find bytes near the decks that follow a two-way change (MASTER on one deck or the
     /// other, a pad playing or not); a trigger file marks each state
     Memflag {
@@ -202,6 +213,7 @@ fn main() -> anyhow::Result<()> {
             analyze,
             seconds,
         } => live::sim(app_dir, &title, seek, gain, analyze, seconds)?,
+        Command::Lyrics { app_dir, grep, offline } => library_cmds::lyrics(app_dir, grep, offline)?,
         Command::Devices => live::devices(),
         Command::Listen { device, seconds } => live::listen(device.as_deref(), seconds)?,
         #[cfg(windows)]

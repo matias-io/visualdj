@@ -9,6 +9,7 @@ pub mod gpu;
 pub mod headless;
 pub mod hot_reload;
 pub mod hud;
+pub mod lyrics;
 pub mod overlay_options;
 pub mod quad;
 pub mod renderer;

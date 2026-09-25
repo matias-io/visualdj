@@ -17,6 +17,7 @@ onset-core.workspace = true
 onset-rekordbox.workspace = true
 onset-transport.workspace = true
 onset-audio.workspace = true
+onset-lyrics.workspace = true
 anyhow.workspace = true
 clap.workspace = true
 directories.workspace = true

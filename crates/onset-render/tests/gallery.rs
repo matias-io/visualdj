@@ -260,3 +260,51 @@ fn every_scene_reacts_to_the_music_and_the_drop() {
         assert!(change > 1.0, "{name}: bass and treble look the same ({change:.2})");
     }
 }
+
+#[test]
+fn lyrics_follow_the_playhead_in_every_style() {
+    use onset_core::lyrics::Lyrics;
+    use onset_render::overlay_options::{LyricStyle, LyricsOptions};
+    let mut gallery = Gallery::new();
+    assert!(gallery.r.set_scene("synthwave"));
+    // The state's playhead runs at t + 60 s: the first line is sung from 60.2 s.
+    let lrc = "[01:00.20] You lift my heart up\n[01:01.60] When the rest of me is down\n[01:03.00] You enchant me\n";
+    let lyrics = std::sync::Arc::new(Lyrics::parse_lrc(lrc, "test"));
+    let drop_at = 1.6;
+    let mut shots: Vec<Vec<u8>> = Vec::new();
+    for (style, at) in [
+        (LyricStyle::Clean, 0.9),
+        (LyricStyle::Glow, 0.9),
+        (LyricStyle::Karaoke, 1.0),
+        (LyricStyle::Glow, drop_at + 0.15),
+    ] {
+        let mut plain = None;
+        for show in [false, true] {
+            gallery.r.set_lyrics(track().id, Some(lyrics.clone()), String::new());
+            gallery.r.set_lyrics_options(LyricsOptions {
+                enabled: show,
+                style,
+                drop_fx: 1.0,
+                ..LyricsOptions::default()
+            });
+            // Run up to the moment so the line has slid in.
+            let mut px = Vec::new();
+            let steps = 30;
+            for k in 0..=steps {
+                let t = at - 0.5 + 0.5 * k as f32 / steps as f32;
+                let ms = state(t, drop_at, 1.0, 1.0);
+                if let Some(p) = gallery.frame(&ms, 500.0 + t, k == steps) {
+                    px = p;
+                }
+            }
+            if show {
+                let d = plain.as_ref().map_or(0.0, |p: &Vec<u8>| diff(p, &px));
+                assert!(d > 0.3, "{style:?} at {at}: the lyrics barely show ({d:.2})");
+                shots.push(px);
+            } else {
+                plain = Some(px);
+            }
+        }
+    }
+    gallery.sheet("lyrics", [&shots[0], &shots[1], &shots[2], &shots[3]]);
+}

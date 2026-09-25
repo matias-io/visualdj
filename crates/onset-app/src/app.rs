@@ -47,6 +47,8 @@ pub struct AppOptions {
     pub launcher: bool,
     /// Where `<version>.toml` offsets live; the launcher lists and writes them.
     pub offsets_dir: PathBuf,
+    /// Onset's cache folder (decrypted library, lyrics).
+    pub cache_dir: PathBuf,
     pub engine: Option<Engine>,
 }
 
@@ -98,6 +100,7 @@ pub struct OnsetApp {
     exiting: bool,
     /// Where the one requested screenshot goes; taken out once it is written.
     screenshot_pending: Option<PathBuf>,
+    lyrics: crate::lyrics::LyricsWorker,
 }
 
 fn monitor_infos(event_loop: &ActiveEventLoop) -> (Vec<MonitorHandle>, Vec<MonitorInfo>) {
@@ -327,6 +330,7 @@ fn draw_overlay(
 impl OnsetApp {
     pub fn new(opts: AppOptions) -> Self {
         let screenshot_pending = opts.screenshot.clone();
+        let opts_cache_dir = opts.cache_dir.clone();
         let versions = all_calibrated_versions(&opts.offsets_dir);
         let mode = if opts.launcher {
             Mode::Launcher
@@ -354,6 +358,7 @@ impl OnsetApp {
             frame_log: Vec::new(),
             exiting: false,
             screenshot_pending,
+            lyrics: crate::lyrics::LyricsWorker::spawn(&opts_cache_dir.join("lyrics")),
         }
     }
 
@@ -448,6 +453,7 @@ impl OnsetApp {
         renderer.set_show_hud(self.opts.config.show_hud);
         renderer.set_settings(&gpu, self.render_settings());
         renderer.set_overlay_options(self.opts.config.hud.clone(), self.opts.config.card.clone());
+        renderer.set_lyrics_options(self.opts.config.lyrics.clone());
         renderer.set_internal_scale(&gpu, self.opts.config.internal_scale);
         load_scenes(&gpu, &mut renderer);
         let wanted = self
@@ -543,6 +549,8 @@ impl OnsetApp {
             .engine
             .as_ref()
             .map_or_else(|| Arc::new(MusicState::default()), Engine::state);
+        self.lyrics
+            .tend(&mut s.renderer, ms.track.as_ref(), self.opts.config.lyrics.online);
         let mut enc = s
             .gpu
             .device
@@ -693,6 +701,7 @@ impl OnsetApp {
                 if let Some(s) = self.surface.as_mut() {
                     s.renderer.set_settings(&s.gpu, settings);
                     s.renderer.set_overlay_options(hud, card);
+                    s.renderer.set_lyrics_options(self.opts.config.lyrics.clone());
                 }
             }
             OverlayAction::Preview(event) => {

@@ -4,6 +4,7 @@ mod bench;
 mod config;
 mod engine;
 mod launcher;
+mod lyrics;
 mod monitors;
 mod overlay;
 mod thumbs;
@@ -148,6 +149,7 @@ fn main() -> anyhow::Result<()> {
         screenshot: cli.screenshot.clone(),
         launcher,
         offsets_dir,
+        cache_dir: cache_dir(),
         engine,
     };
     let event_loop = EventLoop::new()?;

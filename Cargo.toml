@@ -17,6 +17,7 @@ onset-transport = { path = "crates/onset-transport" }
 onset-audio = { path = "crates/onset-audio" }
 onset-render = { path = "crates/onset-render" }
 onset-app = { path = "crates/onset-app" }
+onset-lyrics = { path = "crates/onset-lyrics" }
 
 anyhow = "1.0"
 thiserror = "2.0"
@@ -31,6 +32,7 @@ crossbeam-channel = "0.5"
 arc-swap = "1.9"
 parking_lot = "0.12"
 tempfile = "3"
+ureq = { version = "3", features = ["json"] }
 
 rusqlite = { version = "0.40", features = ["bundled"] }
 aes = "0.8"

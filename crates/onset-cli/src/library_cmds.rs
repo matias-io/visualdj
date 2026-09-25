@@ -104,3 +104,51 @@ pub fn anlz(app_dir: Option<PathBuf>, title: &str) -> anyhow::Result<()> {
     }
     Ok(())
 }
+
+/// Looks up (or reads from the cache) the lyrics of every track in the collection, or of
+/// those whose title or artist contains `grep`, and prints a line per track and a summary.
+pub fn lyrics(app_dir: Option<PathBuf>, grep: Option<String>, offline: bool) -> anyhow::Result<()> {
+    use onset_lyrics::{LyricsStore, Outcome, Query};
+    let (_, library) = crate::common::open_library(app_dir)?;
+    let dir = crate::common::cache_dir()?.join("lyrics");
+    let store = LyricsStore::new(&dir);
+    let wanted = grep.map(|g| g.to_lowercase());
+    let (mut synced, mut plain, mut instrumental, mut none) = (0, 0, 0, 0);
+    for t in library.tracks() {
+        let hay = format!("{} {}", t.artist, t.title).to_lowercase();
+        if wanted.as_ref().is_some_and(|w| !hay.contains(w)) {
+            continue;
+        }
+        let q = Query::from_meta(t);
+        let was_cached = store.cached(&q).is_some();
+        let out = store.lookup(&q, !offline);
+        let tag = match &out {
+            Outcome::Synced(l) => {
+                synced += 1;
+                format!("synced ({} lines)", l.lines.len())
+            }
+            Outcome::Plain => {
+                plain += 1;
+                "unsynced only".to_string()
+            }
+            Outcome::Instrumental => {
+                instrumental += 1;
+                "instrumental".to_string()
+            }
+            Outcome::NotFound | Outcome::Offline => {
+                none += 1;
+                "none".to_string()
+            }
+        };
+        println!("{tag:<20} {} - {}", t.artist, t.title);
+        if !was_cached && !offline {
+            // Be polite to the free services.
+            std::thread::sleep(std::time::Duration::from_millis(300));
+        }
+    }
+    println!(
+        "\n{synced} synced, {plain} unsynced only, {instrumental} instrumental, {none} without lyrics. Cache: {}",
+        dir.display()
+    );
+    Ok(())
+}
