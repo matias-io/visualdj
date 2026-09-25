@@ -406,6 +406,7 @@ impl Engine {
                     audio_choice: audio_choice.clone(),
                     audio_want: spawn_audio_watch(audio_choice),
                     lyrics_progress: lyrics_progress_w,
+                    prefetching: Arc::new(std::sync::atomic::AtomicBool::new(false)),
                 };
 
                 engine.run(&rx, &state_w, &status_w);
@@ -510,6 +511,8 @@ struct Running {
     audio_want: crossbeam_channel::Receiver<Option<String>>,
     /// Shared with the handle: the whole-library lyrics look-up's progress.
     lyrics_progress: Arc<ArcSwap<String>>,
+    /// Set while the whole-library look-up runs, so a second press does not start another.
+    prefetching: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl Running {
@@ -565,17 +568,22 @@ impl Running {
                 }
             }
             (EngineCommand::PrefetchLyrics, _) => {
-                let busy = self.lyrics_progress.load().starts_with("Checked");
-                if !busy {
+                use std::sync::atomic::Ordering;
+                if !self.prefetching.swap(true, Ordering::AcqRel) {
                     let tracks = self.library.tracks().to_vec();
                     let cache = self.cfg.cache_dir.clone();
                     let progress = self.lyrics_progress.clone();
+                    let running = self.prefetching.clone();
                     progress.store(Arc::new("Starting the lyrics look-up...".into()));
                     let spawned = std::thread::Builder::new()
                         .name("onset-lyrics-all".into())
-                        .spawn(move || prefetch_lyrics(&tracks, &cache, &progress));
+                        .spawn(move || {
+                            prefetch_lyrics(&tracks, &cache, &progress);
+                            running.store(false, Ordering::Release);
+                        });
                     if let Err(e) = spawned {
                         tracing::warn!(error = %e, "cannot start the lyrics look-up");
+                        self.prefetching.store(false, Ordering::Release);
                     }
                 }
             }

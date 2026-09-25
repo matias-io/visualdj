@@ -104,6 +104,9 @@ pub struct RenderSettings {
     pub rotation: Option<Vec<String>>,
     /// Per-scene speed, intensity and colour shift, by scene name.
     pub tweaks: std::collections::BTreeMap<String, onset_core::show::SceneTweak>,
+    /// Lower the render resolution a little when frames miss the display's refresh, and
+    /// raise it again when they keep up.
+    pub adaptive: bool,
 }
 
 impl Default for RenderSettings {
@@ -115,9 +118,17 @@ impl Default for RenderSettings {
             auto_change: AutoChange::default(),
             rotation: None,
             tweaks: std::collections::BTreeMap::new(),
+            adaptive: true,
         }
     }
 }
+
+/// A frame longer than this missed a 60 Hz refresh (with some slack).
+const SLOW_FRAME_MS: f32 = 21.0;
+/// Slow frames in a second that make adaptive resolution step down.
+const SLOW_PER_SECOND: u32 = 8;
+/// Adaptive resolution never goes below this share of the output.
+const MIN_ADAPTIVE: f32 = 0.6;
 
 /// How long the shortcut hint stays when the show starts.
 const HINT_S: f32 = 6.0;
@@ -183,6 +194,12 @@ pub struct Renderer {
     last_cpu_ms: f32,
     /// Scenes render at `internal_scale` of the output; the composite upscales.
     internal_scale: f32,
+    /// Adaptive resolution: the current factor (0.6..1), slow frames in this window of
+    /// frames, frames counted, and smooth frames in a row.
+    adaptive_scale: f32,
+    slow_frames: u32,
+    window_frames: u32,
+    smooth_run: u32,
     /// Output nothing but black: the DJ's panic button and the end-of-set fade target.
     blackout: bool,
     last_frame: Option<Instant>,
@@ -239,6 +256,10 @@ impl Renderer {
             scale: 1.0,
             last_cpu_ms: 0.0,
             internal_scale: 1.0,
+            adaptive_scale: 1.0,
+            slow_frames: 0,
+            window_frames: 0,
+            smooth_run: 0,
             blackout: false,
             last_frame: None,
             frame_clock: 0.0,
@@ -461,7 +482,8 @@ impl Renderer {
 
     /// The size scenes actually render at.
     pub fn internal_size(&self) -> (u32, u32) {
-        let k = (self.internal_scale * self.settings.quality.internal_scale()).max(0.25);
+        let k = (self.internal_scale * self.settings.quality.internal_scale() * self.adaptive_scale)
+            .max(0.25);
         if k >= 0.999 {
             self.size
         } else {
@@ -470,6 +492,48 @@ impl Renderer {
                 ((self.size.1 as f32 * k).round() as u32).max(1),
             )
         }
+    }
+
+    /// The adaptive resolution factor in use (1 = full).
+    pub fn adaptive_scale(&self) -> f32 {
+        self.adaptive_scale
+    }
+
+    /// Adaptive resolution: a frame that took longer than [`SLOW_FRAME_MS`] counts as slow.
+    /// A second with [`SLOW_PER_SECOND`] slow frames lowers the resolution a step; ten smooth
+    /// seconds raise it again. Returns true when the render size changed.
+    fn adapt(&mut self, interval_ms: Option<f32>) -> bool {
+        if !self.settings.adaptive {
+            let changed = self.adaptive_scale < 1.0;
+            self.adaptive_scale = 1.0;
+            return changed;
+        }
+        let Some(ms) = interval_ms else {
+            return false;
+        };
+        self.window_frames += 1;
+        if ms > SLOW_FRAME_MS {
+            self.slow_frames += 1;
+            self.smooth_run = 0;
+        } else {
+            self.smooth_run += 1;
+        }
+        let mut changed = false;
+        if self.window_frames >= 60 {
+            if self.slow_frames >= SLOW_PER_SECOND && self.adaptive_scale > MIN_ADAPTIVE + 1e-3 {
+                self.adaptive_scale = (self.adaptive_scale - 0.1).max(MIN_ADAPTIVE);
+                tracing::info!(scale = self.adaptive_scale, "frames running slow; rendering smaller");
+                changed = true;
+            }
+            self.window_frames = 0;
+            self.slow_frames = 0;
+        }
+        if self.smooth_run >= 600 && self.adaptive_scale < 1.0 {
+            self.adaptive_scale = (self.adaptive_scale + 0.05).min(1.0);
+            self.smooth_run = 0;
+            changed = true;
+        }
+        changed
     }
 
     fn rebuild_targets(&mut self, gpu: &Gpu) {
@@ -781,6 +845,9 @@ impl Renderer {
             .map(|t| started.duration_since(t).as_secs_f32() * 1000.0);
         self.last_frame = Some(started);
         self.hud.record(interval_ms, self.last_cpu_ms);
+        if self.adapt(interval_ms) {
+            self.rebuild_targets(gpu);
+        }
         // Effects advance with the clock the caller gives (the app's wall time, a test's
         // synthetic time), not with how fast frames happen to be rendered.
         let dt = if self.frame_index == 0 {
@@ -931,7 +998,11 @@ impl Renderer {
                 scene: self.active_scene().unwrap_or("-").to_string(),
                 size: self.size,
                 gpu_ms: None,
-                adapter: self.adapter.clone(),
+                adapter: if self.adaptive_scale < 0.999 {
+                    format!("{}  ·  res {:.0}%", self.adapter, self.adaptive_scale * 100.0)
+                } else {
+                    self.adapter.clone()
+                },
                 last_error: self.last_error.clone(),
                 source: self.source_line.clone(),
             };

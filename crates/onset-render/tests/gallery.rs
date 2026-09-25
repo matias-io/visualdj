@@ -135,7 +135,16 @@ struct Gallery {
 impl Gallery {
     fn new() -> Self {
         let dump = std::env::var_os("ONSET_DUMP_DIR").map(std::path::PathBuf::from);
-        let size = if dump.is_some() { (960, 540) } else { (192, 108) };
+        // ONSET_GALLERY_SIZE=1920x1080 renders full-size frames for screenshots.
+        let wanted = std::env::var("ONSET_GALLERY_SIZE").ok().and_then(|v| {
+            let (w, h) = v.split_once('x')?;
+            Some((w.parse().ok()?, h.parse().ok()?))
+        });
+        let size = match (&dump, wanted) {
+            (Some(_), Some(s)) => s,
+            (Some(_), None) => (960, 540),
+            _ => (192, 108),
+        };
         let h = Headless::new(size, dump.is_none()).expect("adapter");
         let mut r = Renderer::new(&h.gpu, size, h.format);
         let loaded = builtin_scenes(&h.gpu, r.scene_format(), &r.bindings().layout, &shader_dir());
@@ -149,6 +158,8 @@ impl Gallery {
             RenderSettings {
                 auto: false,
                 auto_change: AutoChange::Off,
+                // Readbacks make test frames slow; a fixed resolution keeps them comparable.
+                adaptive: false,
                 quality: if dump.is_some() { Quality::High } else { Quality::Low },
                 ..RenderSettings::default()
             },
@@ -307,4 +318,50 @@ fn lyrics_follow_the_playhead_in_every_style() {
         }
     }
     gallery.sheet("lyrics", [&shots[0], &shots[1], &shots[2], &shots[3]]);
+}
+
+/// Frame cost of each scene at 1920x1080 on the fastest adapter, without a window:
+/// `cargo test --release -p onset-render --test gallery bench -- --ignored --nocapture`.
+#[test]
+#[ignore = "benchmark: run on demand"]
+fn bench_scenes_headless() {
+    let size = (1920, 1080);
+    let h = Headless::new(size, false).expect("adapter");
+    let mut r = Renderer::new(&h.gpu, size, h.format);
+    let loaded = builtin_scenes(&h.gpu, r.scene_format(), &r.bindings().layout, &shader_dir());
+    for s in loaded.scenes {
+        r.add_scene(s);
+    }
+    r.set_show_card(false);
+    r.set_settings(
+        &h.gpu,
+        RenderSettings {
+            auto: false,
+            auto_change: AutoChange::Off,
+            // Readbacks make test frames slow; a fixed resolution keeps them comparable.
+            adaptive: false,
+            quality: Quality::High,
+            ..RenderSettings::default()
+        },
+    );
+    println!("adapter: {}", h.gpu.adapter_name());
+    for name in r.scene_names() {
+        assert!(r.set_scene(&name));
+        let view = h.view();
+        let mut run = |frames: u32, start: f32| {
+            let t0 = std::time::Instant::now();
+            for f in 0..frames {
+                let t = start + f as f32 / 60.0;
+                let ms = state(t % 3.0, 1.6, 1.0, 1.0);
+                let mut enc = h.gpu.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("b") });
+                r.render(&h.gpu, &mut enc, &view, &ms, 1000.0 + t);
+                h.gpu.queue.submit([enc.finish()]);
+                let _ = h.gpu.device.poll(wgpu::PollType::wait_indefinitely());
+            }
+            t0.elapsed().as_secs_f64() * 1000.0 / f64::from(frames)
+        };
+        run(30, 0.0); // warm up and finish the scene crossfade
+        let ms = run(120, 1.0);
+        println!("{name:>10}: {ms:6.2} ms");
+    }
 }

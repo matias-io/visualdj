@@ -103,6 +103,8 @@ pub struct Config {
     pub blackout_logo: Option<PathBuf>,
     /// Share of the screen the logo may fill.
     pub blackout_logo_size: f32,
+    /// Render smaller for a while when frames miss the refresh.
+    pub adaptive_resolution: bool,
     /// Set when the file on disk failed to parse: saving would destroy the user's edits,
     /// so it is refused until they fix the file.
     #[serde(skip)]
@@ -134,6 +136,7 @@ impl Default for Config {
             lyrics: onset_render::overlay_options::LyricsOptions::default(),
             blackout_logo: None,
             blackout_logo_size: 0.5,
+            adaptive_resolution: true,
             read_only: false,
         }
     }
@@ -149,6 +152,7 @@ impl Config {
             auto_change: self.auto_change,
             rotation: self.rotation.clone(),
             tweaks: self.tweaks.clone(),
+            adaptive: self.adaptive_resolution,
         }
     }
 }
@@ -288,6 +292,7 @@ mod tests {
             },
             blackout_logo: Some(PathBuf::from("logo.png")),
             blackout_logo_size: 0.3,
+            adaptive_resolution: false,
             read_only: false,
         };
         cfg.save_to(&path).unwrap();

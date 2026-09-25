@@ -1042,6 +1042,13 @@ fn output_tab(ui: &mut egui::Ui, config: &mut Config, view: &OverlayView<'_>, ed
         }
     }
     ui.label(format!("Frame time: {:.1} ms", view.frame_ms));
+    if ui
+        .checkbox(&mut config.adaptive_resolution, "Adaptive resolution")
+        .on_hover_text("When frames start missing the screen's refresh, Onset renders a little smaller until they keep up again, so the show stays smooth. The stats show the resolution when it drops.")
+        .changed()
+    {
+        edits.push(OverlayAction::Look);
+    }
 
     section(ui, "Timing");
     ui.horizontal(|ui| {

@@ -8,7 +8,25 @@ start before the drop because rekordbox already analysed where the drop is.
 It also shows what is playing (title, artists, album, year, key, BPM, artwork) and themes
 the visuals from the artwork's colours.
 
-![The nine festival scenes](docs/img/scenes.jpg)
+![The festival scenes](docs/img/scenes.jpg)
+
+## Quick start
+
+On Windows 11 with rekordbox 7:
+
+1. Get the Onset folder: unzip `Onset-<version>-windows.zip` anywhere, or build it yourself
+   (see [Build and run](#build-and-run)) and run `scripts\package.ps1` to make that zip.
+   Nothing else needs installing.
+2. Start rekordbox in Performance mode and load a track.
+3. Double-click `onset.exe`. In the launcher, pick the screen for the show and a style,
+   then press **Start show**.
+4. During the show: **H** stats, **C** now-playing card, **B** blackout, **Left/Right**
+   scene, **F** fullscreen, **Esc** back to the launcher.
+5. A rekordbox version Onset has not seen yet: open the **Setup** tab and press
+   **Calibrate** (about two minutes, once per version).
+
+With only one screen, the show covers it: press **F** for a window you can move aside, or
+**Esc** to go back to the launcher, and Alt+Tab to reach rekordbox.
 
 ## Status
 
@@ -19,11 +37,16 @@ listens to the mix, and drives a show from both. Verified on a Surface Laptop St
 What it does:
 
 - **Follows rekordbox.** It finds every deck in rekordbox's memory, knows which track each
-  one has loaded, and follows the deck that is playing: title, artwork, beat grid, phrases,
-  hot cues, key, genre and mood come from the rekordbox library.
+  one has loaded, and follows the MASTER deck the moment MASTER moves: title, artwork, beat
+  grid, phrases, hot cues, key, genre and mood come from the rekordbox library. Streamed
+  tracks (TIDAL and the like) are recognised by comparing what plays with rekordbox's
+  stored waveform, and instant doubles are followed.
 - **Listens by frequency, not just loudness.** The mix splits into sub, bass, low-mid, mid,
-  high-mid and treble, each with its own gain, plus kick, snare and hat detection. Every
-  scene moves different parts with different bands.
+  high-mid and treble, each with its own gain, plus kick, snare and hat detection. rekordbox's
+  own 3-band waveform and vocal detection are read at the playhead too, so vocals light
+  things up with no delay. Every scene moves different parts with different bands. The
+  audio device can be changed live, and Onset follows a controller being unplugged and
+  plugged back in.
 - **Directs a show from the analysis.** Beats, bars, phrase changes, drops, breakdowns and
   hot cues become events: white flashes on drops, flashes in the cue's colour as the
   playhead passes a cue, the odd inversion or hue swing, camera shake and zoom on kicks.
@@ -34,15 +57,21 @@ What it does:
   the Neon Tunnel. It can change scene per track, at drops, or every few phrases, with a
   glitch, zoom, flash or wipe between them. The HUD and the Now Playing card swell briefly
   on a new track or a drop.
-- **Nine festival scenes**, raymarched in 3D or drawn in 2D, on an HDR pipeline with bloom,
+- **Ten festival scenes**, raymarched in 3D or drawn in 2D, on an HDR pipeline with bloom,
   feedback trails and film grain: Neon Tunnel, Outrun, Silk, Mandala, Laser Show, Deep
-  Space, Crystal, Liquid and Cover Art. The four earlier scenes (`pulse`, `ring`, `warp`,
+  Space, Zero Gravity, Crystal, Liquid and Cover Art. Build-ups sweep light across the screen
+  before a drop and every new phrase slides the picture; nothing flashes faster than three
+  times a second. The four earlier scenes (`pulse`, `ring`, `warp`,
   `voronoi`) remain for low-end machines. Colours come from the cover art.
+- **Synced lyrics.** Each track's lyrics are looked up on LRCLIB (with MusicBrainz for
+  ISRC matching) the first time it plays, or for the whole library with one button, and
+  cached. They follow the playhead line by line in a Clean, Glow or Karaoke style, and move
+  with the drop.
 - **A launcher for the set.** The Show tab has everything needed: output screen, a Chill,
-  Club or Festival style, Auto scenes, and the card and HUD switches. The other tabs hold the
-  finer controls: which scenes Auto uses, effect strengths with live meters and preview
-  buttons, graphics card and quality, the audio input with a live spectrum, and rekordbox
-  calibration.
+  Club or Festival style, Auto scenes, and the card and stats switches. Advanced tabs hold
+  the rest: scene pictures with per-scene speed and colour, effect strengths with live
+  meters and preview buttons, where the card and stats sit and what they show, lyrics,
+  graphics card and quality, the audio input, a blackout logo, and rekordbox calibration.
 
 Frame times at 1920x1080, High quality, measured with `--bench` on the RTX 3050 Ti:
 
@@ -54,14 +83,20 @@ Frame times at 1920x1080, High quality, measured with `--bench` on the RTX 3050 
 | Mandala | 2.9 ms | 5.1 ms |
 | Laser Show | 4.1 ms | 5.7 ms |
 | Deep Space | 10.8 ms | 14.2 ms |
+| Zero Gravity | 7.5 ms | (headless run) |
 | Crystal | 11.1 ms | 12.7 ms |
 | Liquid | 5.2 ms | 7.4 ms |
 | Cover Art | 2.6 ms | 4.7 ms |
 
+Zero Gravity was timed with the headless benchmark (`cargo test --release -p onset-render
+--test gallery bench -- --ignored --nocapture`), which renders every scene without a window.
+Adaptive resolution renders a little smaller when frames start missing the refresh.
+
 Low and Medium quality render at a lower internal resolution and keep the heavy scenes out
 of Auto, for integrated graphics.
 
-Not done yet: synced lyrics, and reading which deck rekordbox calls MASTER.
+Not done yet: reading rekordbox's sampler pads and FX state, and a streamed track's
+identity straight from memory (today it is recognised by ear after a few seconds).
 
 ## Build and run
 

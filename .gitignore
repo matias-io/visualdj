@@ -29,3 +29,6 @@ Thumbs.db
 
 # Agent worktrees
 .claude/worktrees/
+
+# Packaged builds (scripts/package.ps1)
+/dist/
