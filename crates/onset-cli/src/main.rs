@@ -131,6 +131,25 @@ enum Command {
         #[arg(long, default_value_t = 0x10000)]
         window: usize,
     },
+    /// Find bytes near the decks that follow a two-way change (MASTER on one deck or the
+    /// other, a pad playing or not); a trigger file marks each state
+    Memflag {
+        /// The state (0 or 1) set up before each trigger, in order
+        #[arg(long, value_delimiter = ',')]
+        labels: Vec<u8>,
+        /// Created by the operator after each change
+        #[arg(long)]
+        trigger: PathBuf,
+        /// Offsets folder (default: `offsets/` or `ONSET_OFFSETS`)
+        #[arg(long)]
+        offsets_dir: Option<PathBuf>,
+        /// Save the raw windows here
+        #[arg(long)]
+        dump: Option<PathBuf>,
+        /// Analyse a saved dump instead of reading rekordbox
+        #[arg(long)]
+        from: Option<PathBuf>,
+    },
     /// Print every static pointer chain to the given absolute addresses in rekordbox
     Memchains {
         /// Addresses in hex, e.g. 0x2d81797d2b4
@@ -161,6 +180,7 @@ enum Command {
     },
 }
 
+#[allow(clippy::too_many_lines)] // one match arm per command
 fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -227,6 +247,22 @@ fn main() -> anyhow::Result<()> {
         } => memscan::memmaster(&deck1, &deck2, wait, window)?,
         #[cfg(not(windows))]
         Command::Memmaster { .. } => anyhow::bail!("memmaster needs Windows"),
+        #[cfg(windows)]
+        Command::Memflag {
+            labels,
+            trigger,
+            offsets_dir,
+            dump,
+            from,
+        } => memscan::memflag(
+            &offsets_dir.unwrap_or_else(calibrate::default_out_dir),
+            &labels,
+            &trigger,
+            dump.as_deref(),
+            from.as_deref(),
+        )?,
+        #[cfg(not(windows))]
+        Command::Memflag { .. } => anyhow::bail!("memflag needs Windows"),
         #[cfg(windows)]
         Command::Memchains {
             addrs,

@@ -759,6 +759,13 @@ mod live {
         anchors: Option<Vec<crate::memory::offsets::Anchor>>,
     }
 
+    fn note_master(last: &mut Option<usize>, master: Option<usize>) {
+        if master != *last {
+            tracing::info!(?master, "MASTER deck changed");
+            *last = master;
+        }
+    }
+
     /// Applies a finished background deck scan, and starts one when there are no decks or
     /// the found ones went stale (rekordbox rebuilt its players).
     fn tend_scan(
@@ -830,6 +837,8 @@ mod live {
         state: State,
         /// Library file lengths by normalised path, for deck attribution.
         durations: HashMap<String, f64>,
+        /// The MASTER deck at the last poll, to log changes.
+        last_master: Option<usize>,
     }
 
     const RETRY: Duration = Duration::from_secs(2);
@@ -844,6 +853,7 @@ mod live {
                     next_try: Instant::now(),
                 },
                 durations: HashMap::new(),
+                last_master: None,
             }
         }
 
@@ -993,6 +1003,7 @@ mod live {
                         tracing::info!(decks = ?after, ?positions, "deck tracks");
                     }
                     let master = reader.master_deck().map(usize::from);
+                    note_master(&mut self.last_master, master);
                     if let Some(i) = chooser.choose(master, &playing)
                         && let Some(state) = &states[i]
                     {

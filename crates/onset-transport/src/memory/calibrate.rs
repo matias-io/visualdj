@@ -136,6 +136,85 @@ pub fn rank_chains(chains: &mut [Chain]) {
     chains.sort_by_key(|c| (c.hops.len(), c.hops.iter().sum::<u64>(), c.root));
 }
 
+/// Finds a per-deck master flag. `decks[d][s]` holds two reads of the memory around deck
+/// `d`'s position field, taken a moment apart in state `s`; `labels[s]` is the deck that was
+/// MASTER in that state. Returns `(offset, on, off)` for every byte that holds still within
+/// each state, reads `on` on the master deck and `off` on the others, in every state and on
+/// every deck.
+pub fn master_flags(decks: &[Vec<(Vec<u8>, Vec<u8>)>], labels: &[usize]) -> Vec<(usize, u8, u8)> {
+    let len = decks
+        .iter()
+        .flatten()
+        .flat_map(|(a, b)| [a.len(), b.len()])
+        .min()
+        .unwrap_or(0);
+    let every_deck_has_both = (0..decks.len())
+        .all(|d| labels.contains(&d) && labels.iter().any(|&l| l != d));
+    if decks.len() < 2 || !every_deck_has_both {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    'offset: for i in 0..len {
+        let mut on: Option<u8> = None;
+        let mut off: Option<u8> = None;
+        for (d, states) in decks.iter().enumerate() {
+            for (s, (a, b)) in states.iter().enumerate() {
+                if a[i] != b[i] {
+                    continue 'offset;
+                }
+                let slot = if labels.get(s) == Some(&d) { &mut on } else { &mut off };
+                match slot {
+                    Some(v) if *v != a[i] => continue 'offset,
+                    Some(_) => {}
+                    None => *slot = Some(a[i]),
+                }
+            }
+        }
+        if let (Some(on), Some(off)) = (on, off)
+            && on != off
+        {
+            out.push((i, on, off));
+        }
+    }
+    out
+}
+
+/// Bytes of one memory window that follow a two-way label. `states[s]` holds two reads of
+/// the window a moment apart in state `s`, labelled `labels[s]` (0 or 1). Returns
+/// `(offset, value in label 0, value in label 1)` for every byte that holds still within each
+/// state, keeps one value per label, and differs between the labels.
+pub fn label_bytes(states: &[(Vec<u8>, Vec<u8>)], labels: &[u8]) -> Vec<(usize, u8, u8)> {
+    let len = states
+        .iter()
+        .flat_map(|(a, b)| [a.len(), b.len()])
+        .min()
+        .unwrap_or(0);
+    if !labels.contains(&0) || !labels.contains(&1) {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    'offset: for i in 0..len {
+        let mut vals: [Option<u8>; 2] = [None, None];
+        for ((a, b), &l) in states.iter().zip(labels) {
+            if a[i] != b[i] || l > 1 {
+                continue 'offset;
+            }
+            let slot = &mut vals[usize::from(l)];
+            match slot {
+                Some(v) if *v != a[i] => continue 'offset,
+                Some(_) => {}
+                None => *slot = Some(a[i]),
+            }
+        }
+        if let [Some(x), Some(y)] = vals
+            && x != y
+        {
+            out.push((i, x, y));
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -275,5 +354,42 @@ mod tests {
         assert_eq!(v[0], c(1, &[0x10]));
         assert_eq!(v[1], c(5, &[0x20]));
         assert_eq!(v[2].hops.len(), 2);
+    }
+    #[test]
+    fn master_flag_is_the_byte_that_follows_the_label() {
+        // Two decks, four states: MASTER on deck 0, 1, 0, 1. Byte 2 of each deck's window
+        // is the flag; byte 0 is a counter; byte 1 never changes.
+        let labels = [0usize, 1, 0, 1];
+        let window = |deck: usize, state: usize, tick: u8| {
+            let flag = u8::from(labels[state] == deck);
+            vec![tick.wrapping_add(state as u8 * 7), 0x55, flag, 0]
+        };
+        let decks: Vec<Vec<(Vec<u8>, Vec<u8>)>> = (0..2)
+            .map(|d| (0..4).map(|s| (window(d, s, 1), window(d, s, 2))).collect())
+            .collect();
+        let flags = master_flags(&decks, &labels);
+        assert_eq!(flags, vec![(2, 1, 0)]);
+    }
+
+    #[test]
+    fn master_flag_needs_every_state_to_agree() {
+        let labels = [0usize, 1, 0, 1];
+        // Byte 0 follows the label except in the last state: not a flag.
+        let win = |deck: usize, s: usize| {
+            let on = labels[s] == deck && s != 3 || (deck == 0 && s == 3);
+            vec![u8::from(on)]
+        };
+        let decks: Vec<Vec<(Vec<u8>, Vec<u8>)>> = (0..2)
+            .map(|d| (0..4).map(|s| (win(d, s), win(d, s))).collect())
+            .collect();
+        assert!(master_flags(&decks, &labels).is_empty());
+    }
+
+    #[test]
+    fn label_bytes_keeps_bytes_that_follow_the_label() {
+        let labels = [0u8, 1, 0, 1];
+        let win = |s: usize, tick: u8| vec![tick, 3 + labels[s], 9, s as u8];
+        let states: Vec<(Vec<u8>, Vec<u8>)> = (0..4).map(|s| (win(s, 1), win(s, 2))).collect();
+        assert_eq!(label_bytes(&states, &labels), vec![(1, 3, 4)]);
     }
 }

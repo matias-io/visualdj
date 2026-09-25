@@ -39,3 +39,8 @@ module_offset = 92203160
 [[signature.anchors]]
 offset = -36
 module_offset = 92088496
+
+[signature.master_flag]
+# Found with `onset-cli memflag`: 1 on the MASTER deck, 0 on the others.
+offset = -396
+mask = 1

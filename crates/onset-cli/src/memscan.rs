@@ -587,3 +587,177 @@ pub fn memscan(args: &MemscanArgs) -> anyhow::Result<()> {
     }
     Ok(())
 }
+
+/// Bytes read on each side of a deck's position field when looking for a flag.
+const FLAG_REACH: u64 = 0x2000;
+/// Bytes read from each heap object a deck record points to.
+const TARGET_LEN: u64 = 0x1000;
+
+/// One stretch of memory the flag probe watches.
+struct Probe {
+    name: String,
+    base: u64,
+    len: u64,
+}
+
+/// Reads `len` bytes from `base` page by page on page boundaries; unreadable pages read as
+/// zeros, so offsets stay aligned and those bytes never look like a flag.
+fn read_zero_filled(p: &Process, base: u64, len: u64) -> Vec<u8> {
+    let mut out = vec![0u8; usize::try_from(len).unwrap_or(0)];
+    let mut page = [0u8; 0x1000];
+    let mut at = base & !0xfff;
+    while at < base + len {
+        if p.read_exact(at, &mut page).is_ok() {
+            let from = at.max(base);
+            let to = (at + 0x1000).min(base + len);
+            let dst = usize::try_from(from - base).unwrap_or(0);
+            let src = usize::try_from(from - at).unwrap_or(0);
+            let n = usize::try_from(to - from).unwrap_or(0);
+            out[dst..dst + n].copy_from_slice(&page[src..src + n]);
+        }
+        at += 0x1000;
+    }
+    out
+}
+
+/// Snapshots the memory around every deck, and every heap object the deck records point to,
+/// while the operator changes something between two states (MASTER on one deck or the
+/// other, a pad playing or not). Lists the bytes that follow the change. For each entry in
+/// `labels` (0 or 1) it waits until `trigger` exists, deletes it, and reads everything twice.
+/// With `dump`, the raw reads are saved there; with `from`, a saved dump is analysed.
+pub fn memflag(
+    offsets_dir: &std::path::Path,
+    labels: &[u8],
+    trigger: &std::path::Path,
+    dump: Option<&std::path::Path>,
+    from: Option<&std::path::Path>,
+) -> anyhow::Result<()> {
+    use onset_transport::memory::calibrate::label_bytes;
+    let (names, probes) = match from {
+        Some(dir) => load_flag_dump(dir, labels.len())?,
+        None => capture_flag_states(offsets_dir, labels, trigger, dump)?,
+    };
+    let mut total = 0;
+    for (name, states) in names.iter().zip(&probes) {
+        let hits = label_bytes(states, labels);
+        if hits.is_empty() {
+            continue;
+        }
+        total += hits.len();
+        println!("{name}: {} byte(s) follow the label", hits.len());
+        for (i, x, y) in hits.iter().take(24) {
+            println!("  +{i:#x}: {x:#04x} in state 0, {y:#04x} in state 1");
+        }
+    }
+    println!("{total} byte(s) in {} probe(s)", probes.len());
+    Ok(())
+}
+
+type FlagStates = Vec<Vec<(Vec<u8>, Vec<u8>)>>;
+
+fn load_flag_dump(
+    dir: &std::path::Path,
+    states: usize,
+) -> anyhow::Result<(Vec<String>, FlagStates)> {
+    let names: Vec<String> = std::fs::read_to_string(dir.join("probes.txt"))?
+        .lines()
+        .map(str::to_string)
+        .collect();
+    let mut probes = Vec::new();
+    for k in 0..names.len() {
+        let mut v = Vec::new();
+        for s in 0..states {
+            let a = std::fs::read(dir.join(format!("s{s}_p{k}_a.bin")))?;
+            let b = std::fs::read(dir.join(format!("s{s}_p{k}_b.bin")))?;
+            v.push((a, b));
+        }
+        probes.push(v);
+    }
+    Ok((names, probes))
+}
+
+fn capture_flag_states(
+    offsets_dir: &std::path::Path,
+    labels: &[u8],
+    trigger: &std::path::Path,
+    dump: Option<&std::path::Path>,
+) -> anyhow::Result<(Vec<String>, FlagStates)> {
+    use onset_transport::memory::offsets::Offsets;
+    use onset_transport::memory::reader::ChainReader;
+
+    let p = Process::open(REKORDBOX_EXE)?;
+    let version = p.file_version().unwrap_or_default();
+    let offsets = Offsets::find_version(offsets_dir, &version)
+        .ok_or_else(|| anyhow::anyhow!("no offsets for rekordbox {version}"))?;
+    let mut reader = ChainReader::new(p, offsets);
+    let needle = reader
+        .signature_needle()
+        .ok_or_else(|| anyhow::anyhow!("the offsets for {version} have no signature"))?;
+    println!("Finding the decks (about 20 s)...");
+    let hits = find_bytes(reader.mem(), &needle, 64);
+    reader.adopt_hits(&hits);
+    let positions = reader.deck_positions().to_vec();
+    let heap = heap_regions(reader.mem());
+    let in_heap = |v: u64| heap.iter().any(|r| r.contains(v));
+    let mut probes: Vec<Probe> = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for (d, pos) in positions.iter().enumerate() {
+        let mut b = [0u8; 4];
+        let samples = reader
+            .mem()
+            .read_exact(*pos, &mut b)
+            .map(|()| i32::from_le_bytes(b));
+        println!("deck object {d} at {pos:#x}: position {samples:?} samples");
+        let base = pos - FLAG_REACH;
+        let window = read_zero_filled(reader.mem(), base, 2 * FLAG_REACH);
+        probes.push(Probe {
+            name: format!("deck {d} window (base = position - {FLAG_REACH:#x})"),
+            base,
+            len: 2 * FLAG_REACH,
+        });
+        for (k, chunk) in window.as_chunks::<8>().0.iter().enumerate() {
+            let v = u64::from_le_bytes(*chunk);
+            if v.trailing_zeros() >= 3 && in_heap(v) && seen.insert(v) {
+                let at = i64::try_from(k * 8).unwrap_or(0) - i64::try_from(FLAG_REACH).unwrap_or(0);
+                probes.push(Probe {
+                    name: format!("deck {d} pointer at {at:+#x} -> {v:#x}"),
+                    base: v,
+                    len: TARGET_LEN,
+                });
+            }
+        }
+    }
+    println!("{} probe(s)", probes.len());
+    if let Some(dir) = dump {
+        std::fs::create_dir_all(dir)?;
+        let names: Vec<&str> = probes.iter().map(|p| p.name.as_str()).collect();
+        std::fs::write(dir.join("probes.txt"), names.join("\n"))?;
+    }
+    let read_all = |reader: &ChainReader<Process>| -> Vec<Vec<u8>> {
+        probes
+            .iter()
+            .map(|pr| read_zero_filled(reader.mem(), pr.base, pr.len))
+            .collect()
+    };
+    let mut states: FlagStates = vec![Vec::new(); probes.len()];
+    for (s, &label) in labels.iter().enumerate() {
+        println!("State {s} (label {label}): set it up, then create {}", trigger.display());
+        while !trigger.exists() {
+            std::thread::sleep(Duration::from_millis(200));
+        }
+        let _ = std::fs::remove_file(trigger);
+        std::thread::sleep(Duration::from_millis(400));
+        let a = read_all(&reader);
+        std::thread::sleep(Duration::from_millis(500));
+        let b = read_all(&reader);
+        for (k, (a, b)) in a.into_iter().zip(b).enumerate() {
+            if let Some(dir) = dump {
+                std::fs::write(dir.join(format!("s{s}_p{k}_a.bin")), &a)?;
+                std::fs::write(dir.join(format!("s{s}_p{k}_b.bin")), &b)?;
+            }
+            states[k].push((a, b));
+        }
+        println!("  read");
+    }
+    Ok((probes.into_iter().map(|p| p.name).collect(), states))
+}
