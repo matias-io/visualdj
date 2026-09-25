@@ -429,7 +429,7 @@ impl ShowDirector {
             0.0
         };
 
-        let counted = ms.beat_index.map_or(0.0, |b| b as f32 + ms.beat_phase);
+        let counted = ms.beat_count();
         fx.beat_count = counted;
         fx.bar_count = counted / 4.0;
         events

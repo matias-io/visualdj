@@ -61,6 +61,8 @@ fn playing_state(beat_phase: f32) -> MusicState {
         bpm: 124.0,
         bpm_grid: 124.0,
         beat_phase,
+        // Phrases come from the beat grid, so a playing state with phrases has a beat index.
+        beat_index: Some(82),
         bar_phase: 0.3,
         phrase_phase: 0.5,
         phrase: Some(PhraseKind::Up),

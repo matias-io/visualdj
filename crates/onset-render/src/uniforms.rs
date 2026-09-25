@@ -111,7 +111,11 @@ fn optional_count(v: Option<u32>) -> f32 {
 
 impl FrameUniforms {
     pub fn from_state(ms: &MusicState, resolution: (u32, u32), time_s: f32) -> Self {
-        Self::from_state_with(ms, resolution, time_s, &FrameExtras::default())
+        // Without a show director, still count beats so the music clock runs.
+        let mut extras = FrameExtras::default();
+        extras.fx.beat_count = ms.beat_count();
+        extras.fx.bar_count = extras.fx.beat_count / 4.0;
+        Self::from_state_with(ms, resolution, time_s, &extras)
     }
 
     pub fn from_state_with(

@@ -79,6 +79,17 @@ impl Default for MusicState {
 }
 
 impl MusicState {
+    /// Beats since the start of the track, with the fraction of the current beat. Uses the
+    /// beat grid when rekordbox has one, and otherwise the playhead and the grid tempo, so
+    /// the music-driven clock keeps running for tracks without a grid.
+    pub fn beat_count(&self) -> f32 {
+        match self.beat_index {
+            Some(b) => b as f32 + self.beat_phase,
+            None if self.bpm_grid > 0.0 => (self.playhead_s * f64::from(self.bpm_grid) / 60.0) as f32,
+            None => 0.0,
+        }
+    }
+
     /// `rate` is the playback rate from the clock (`bpm_now / bpm_original`).
     #[allow(clippy::too_many_arguments)]
     pub fn assemble(
@@ -125,6 +136,29 @@ mod tests {
     use crate::audio_features::AudioFeatures;
     use crate::phrase::PhraseKind;
     use crate::structure::StructureState;
+
+    #[test]
+    fn beat_count_uses_the_grid_index_when_known() {
+        let ms = MusicState {
+            beat_index: Some(20),
+            beat_phase: 0.25,
+            ..MusicState::default()
+        };
+        assert!((ms.beat_count() - 20.25).abs() < 1e-4);
+    }
+
+    #[test]
+    fn beat_count_falls_back_to_playhead_and_tempo() {
+        // No beat grid: 30 s into a 120 BPM track is beat 60.
+        let ms = MusicState {
+            beat_index: None,
+            playhead_s: 30.0,
+            bpm_grid: 120.0,
+            ..MusicState::default()
+        };
+        assert!((ms.beat_count() - 60.0).abs() < 1e-3);
+        assert!(MusicState::default().beat_count().abs() < f32::EPSILON);
+    }
 
     #[test]
     fn assemble_copies_structure_and_inputs() {
